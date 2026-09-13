@@ -37,6 +37,15 @@ iPhone 早就用文件夹解决了，但 macOS **从来没把这个交互搬过�
 ## 界面与风格
 
 面板弹在 Dock 图标正上方，点空白处 / Esc / 切走即自动关闭（见上方示意图）。
+
+**面板底色默认与 Dock 栏同套材质**（`menu`，浅色模式下是半透明灰玻璃，深色模式自动变深），
+而不是接近纯白的 `.popover` —— 因为很多 App 图标本身就是白色圆角方块，
+放在纯白底上会和背景糊成一片。每个格子里的图标还叠了一层很轻的投影，轮廓更清楚。
+
+想换底色：改 `groups.json` 里的 `material`，可选
+`menu`（默认，最接近 Dock）/ `hud`（深色 HUD）/ `sidebar` / `header` / `titlebar` /
+`underWindow` / `windowBackground` / `contentBackground` / `toolTip` / `popover`，再 `dg rebuild`。
+
 图标风格在 64px 真实 Dock 尺寸下的表现：
 
 ![图标风格对比](docs/styles.png)
@@ -147,6 +156,7 @@ dg open AI
 | 字段 | 说明 |
 |---|---|
 | `style` | 全局图标风格，默认 `dock`（与 Dock 栏同调的浅灰），见上方对比 |
+| `material` | 弹出面板的底色材质，默认 `menu`（与 Dock 栏同套灰玻璃） |
 | `enabled` | `apply` 不带参数时是否应用它；`apply <组名>` 会忽略此项 |
 | `placement` | `left`（默认，启动器 App）/ `right`（原生文件夹 Stack） |
 | `after` | 可选。显式指定插在哪个 App 后面；不写则**自动落位**到被折叠 App 的原位置 |

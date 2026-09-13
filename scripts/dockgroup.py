@@ -131,6 +131,7 @@ STYLES = {
         cell=0.440, pad=0.085, gap=0.045, shadow=True, icon_shadow=False),
 }
 DEFAULT_STYLE = "dock"
+DEFAULT_MATERIAL = "menu"
 
 # 预览图字体（macOS 26 已移除 PingFang.ttc）
 FONT_CANDIDATES = [
@@ -555,7 +556,8 @@ def make_app_tile(app: Path, label: str) -> dict:
     return {"GUID": guid, "tile-data": data, "tile-type": "file-tile"}
 
 
-def build_launcher_app(g, style=DEFAULT_STYLE, force=False):
+def build_launcher_app(g, style=DEFAULT_STYLE, force=False,
+                       material=DEFAULT_MATERIAL):
     """构建启动器 App：拼贴图标 + Swift 二进制 + Info.plist。
 
     返回 (app 路径, 有效 App 列表, 缺失列表)。内容运行时从分组文件夹现读，
@@ -594,6 +596,7 @@ def build_launcher_app(g, style=DEFAULT_STYLE, force=False):
         "DockGroupFolder": str(folder),
         "DockGroupName": name,
         "DockGroupLogDir": str(CACHE),
+        "DockGroupMaterial": material,
     }
 
     # 图标 / Info.plist / 签名只在内容真的变了才重写。
@@ -1028,7 +1031,8 @@ def cmd_apply(cfg, args):
         if g.get("placement", "left") == "right":
             dest, _, ok, missing = build_group(g, style=style)
         else:
-            dest, ok, missing = build_launcher_app(g, style=style)
+            dest, ok, missing = build_launcher_app(g, style=style,
+                                                   material=cfg.get("material", DEFAULT_MATERIAL))
         print(f"  ✓ {g['name']} → {dest}（{len(ok)} 个 App）")
         if missing:
             print(f"       ⚠ 跳过 {len(missing)} 个不存在的 App")
@@ -1056,7 +1060,8 @@ def cmd_rebuild(cfg, args):
             if g.get("placement", "left") == "right":
                 build_group(g, style=style)
             else:
-                build_launcher_app(g, style=style)
+                build_launcher_app(g, style=style,
+                                   material=cfg.get("material", DEFAULT_MATERIAL))
             touched.append(g["name"])
         except SystemExit as e:
             if not quiet:

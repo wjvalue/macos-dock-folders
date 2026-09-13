@@ -537,3 +537,56 @@ def _drop_shadow(canvas, icon, pos, blur=0.011, offset=0.007, strength=0.34):
 一定要做一张**「把候选图标夹在真实 App 图标中间、按真实 Dock 尺寸并排」**的对比图。
 单独看大图很容易选错 —— 白色底板单看挺干净，放进 Dock 一比就发现它和邻居的
 白底图标糊在一起了。
+
+---
+
+## 14. 弹出面板「太白」，白底图标在里面看不清
+
+用户反馈的其实是**面板**，不是拼贴图标底板：
+面板用的 `.popover` 材质接近纯白，而 Dock 栏是灰玻璃 —— 两者观感差很多，
+白底 App 图标放进近白的面板里同样会糊。
+
+### 修法：材质从 `.popover` 换成 `.menu`
+
+`macOS` 没有公开的「Dock 材质」，与 Dock 栏观感最接近的公开选项是 `.menu`
+（菜单栏和 Dock 用的是同一族材质，浅色模式半透明灰玻璃、深色模式自动变深）。
+
+```swift
+bg.material = .menu     // 而不是 .popover
+```
+
+顺带在 `ItemView.draw` 里给图标加投影，白图标在灰玻璃上轮廓更清楚：
+
+```swift
+if let ctx = NSGraphicsContext.current?.cgContext {
+    ctx.saveGState()
+    ctx.setShadow(offset: CGSize(width: 0, height: -2), blur: 4,
+                  color: NSColor.black.withAlphaComponent(0.30).cgColor)
+    icon.draw(in: iconRect)
+    ctx.restoreGState()
+}
+```
+
+### 两个坑
+
+**① Swift 4 起 `NSVisualEffectMaterial` 改名了**
+
+```swift
+// ✗  'NSVisualEffectMaterial' has been renamed to 'NSVisualEffectView.Material'
+func material(named name: String) -> NSVisualEffectMaterial
+// ✓
+func material(named name: String) -> NSVisualEffectView.Material
+```
+
+**② 让材质可配置，而不是在代码里写死**
+
+面板观感是纯主观的东西，写死 `.menu` 用户不满意还得改代码重编译。
+把材质名从 Info.plist 读（`DockGroupMaterial`），配置里一个字符串就能换：
+
+```swift
+bg.material = material(named: (Bundle.main.object(
+    forInfoDictionaryKey: "DockGroupMaterial") as? String) ?? "menu")
+```
+
+Python 侧把它拼进 Info.plist，并纳入 bundle 的 stamp 哈希 ——
+材质变了 bundle 才会重建，LaunchServices 记录才不会无故失效。

@@ -37,6 +37,28 @@ struct Entry {
     let path: String
 }
 
+/// 把配置里的材质名映射到 AppKit 的效果材质。
+/// macOS 没有公开的「Dock 材质」，与 Dock 栏观感最接近的公开选项是 `.menu`
+/// （和菜单栏同一套材质，浅色模式下是半透明灰玻璃，深色模式自动变深）。
+/// `.popover` 是接近纯白的，放白底 App 图标会糊 —— 这就是「面板太白」的来源。
+func material(named name: String) -> NSVisualEffectView.Material {
+    switch name {
+    case "hud":                return .hudWindow
+    case "sidebar":            return .sidebar
+    case "header":             return .headerView
+    case "popover":            return .popover
+    case "titlebar":           return .titlebar
+    case "underWindow":        return .underWindowBackground
+    case "contentBackground":  return .contentBackground
+    case "sheet":              return .sheet
+    case "windowBackground":   return .windowBackground
+    case "appearanceBased":    return .appearanceBased
+    case "fullScreenUI":       return .fullScreenUI
+    case "toolTip":            return .toolTip
+    default:                   return .menu
+    }
+}
+
 // ─── 事件日志（无 GUI 权限时唯一的排查手段）──────────────────
 var logPath = ""
 var eventLogPath = ""
@@ -115,8 +137,21 @@ final class ItemView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let iconY = bounds.height - 8 - kIcon
-        icon.draw(in: NSRect(x: (bounds.width - kIcon) / 2, y: iconY,
-                             width: kIcon, height: kIcon))
+        let iconRect = NSRect(x: (bounds.width - kIcon) / 2, y: iconY,
+                              width: kIcon, height: kIcon)
+
+        // 给图标加一层很轻的投影。面板底是半透明灰玻璃，白底的 App 图标
+        // （Hermes / WorkBuddy 这类白圆角方块）放上去边界会糊掉，
+        // 有这层投影轮廓才立得住 —— 和主屏图标的处理方式一致。
+        if let ctx = NSGraphicsContext.current?.cgContext {
+            ctx.saveGState()
+            ctx.setShadow(offset: CGSize(width: 0, height: -2), blur: 4,
+                          color: NSColor.black.withAlphaComponent(0.30).cgColor)
+            icon.draw(in: iconRect)
+            ctx.restoreGState()
+        } else {
+            icon.draw(in: iconRect)
+        }
 
         let ps = NSMutableParagraphStyle()
         ps.alignment = .center
@@ -152,6 +187,9 @@ final class Delegate: NSObject, NSApplicationDelegate {
     private var logDir: String {
         (Bundle.main.object(forInfoDictionaryKey: "DockGroupLogDir") as? String)
             ?? (NSHomeDirectory() + "/Dock Groups/.cache")
+    }
+    private var materialName: String {
+        (Bundle.main.object(forInfoDictionaryKey: "DockGroupMaterial") as? String) ?? "menu"
     }
 
     func applicationDidFinishLaunching(_ note: Notification) {
@@ -232,7 +270,7 @@ final class Delegate: NSObject, NSApplicationDelegate {
         p.collectionBehavior = [.canJoinAllSpaces, .transient, .fullScreenAuxiliary]
 
         let bg = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: w, height: h))
-        bg.material = .popover
+        bg.material = material(named: materialName)
         bg.blendingMode = .behindWindow
         bg.state = .active
         bg.wantsLayer = true
