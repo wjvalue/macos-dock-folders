@@ -303,3 +303,92 @@ if p.frame.contains(NSEvent.mouseLocation) {
 面板几何单独存 `<组名>.launch.log`（覆盖式 JSON），便于脚本校验定位；
 事件轨迹存 `<组名>.events.log`（追加式），两者分开，互不干扰。
 
+
+---
+
+## 11. 性能：钱花在哪，以及三个反直觉的发现
+
+先量再说。第一版 `preview`（6 个分组、21 个 App）冷启动要 **15.3s**，逐项拆解后发现
+瓶颈和直觉不一样：
+
+```
+osascript    6 次   2.45s   平均 408ms   ← 真正的瓶颈
+sips        10 次   0.21s   平均  21ms
+iconutil     1 次   0.06s
+make_mosaic        0.16s
+```
+
+### 发现 ①：慢的不是「起进程」，是「让 AppKit 渲染图标」
+
+裸 `osascript` 启动只要 0.07s。但只要脚本里调 `NSWorkspace.iconForFile` 做一次
+图标解析 + TIFF + PNG 编码，就变成 **~180ms/个**，且**与请求的尺寸无关**。
+
+所以「批量化」省下的只是 0.07s/次的进程启动 —— 有价值，但不是主因。
+
+### 发现 ②：`NSImage.size` 对 `TIFFRepresentation` 无效
+
+```javascript
+icon.size = $.NSMakeSize(256, 256);      // 看起来在降分辨率
+const tiff = icon.TIFFRepresentation;    // 实际上还是全分辨率
+```
+
+实测请求 1024 / 512 / 256 / 128，产出文件**都是 1297 KB、耗时都 ~180ms**。
+`size` 只是显示尺寸提示，不影响 `TIFFRepresentation` 的像素尺寸。
+
+→ 想真正降分辨率，得自己建一个目标尺寸的 `NSBitmapImageRep` 再 `drawInRect`。
+但既然耗时不变，**性价比更高的做法是在 Python 侧把落地缓存缩小**
+（见发现 ③）。
+
+### 发现 ③：缩小缓存 → 后续每次解码快 4 倍
+
+图标格子最大约 540px（只有一个 App 的分组），所以缓存里留 512px 足够。
+落地时用 PIL 缩一次（`_shrink_cache`），之后每次 `make_mosaic` 的解码开销大降：
+
+| | 每个图标 | 21 个合计 |
+|---|---|---|
+| 原样缓存 1024px | 1297 KB | 27.2 MB |
+| 缩到 512px | **102 KB** | **2.1 MB** |
+
+效果：冷启动 **15.3s → 7.9s（快 48%）**，热缓存 **1.64s → 0.65s（快 2.5 倍）**。
+
+### 坑：别把渐变改成「建 1×2 再 resize」
+
+看起来更简洁，实际是错的：
+
+```python
+# ✗ 错：PIL 放大时按半像素对齐，2 像素源会变成上下各约 1/4 是平的
+base = Image.new("RGBA", (1, 2)); base.putpixel(...); base.putpixel(...)
+return base.resize((size, size), Image.BILINEAR)
+
+# ✓ 对：逐行算好，一次性 putdata
+ramp = [tuple(int(top[i] + (bottom[i]-top[i]) * y / span) for i in range(4)) for y in range(size)]
+row = Image.new("RGBA", (1, size)); row.putdata(ramp)
+return row.resize((size, size), Image.NEAREST)
+```
+
+PIL 的坐标映射是 `src = (dst + 0.5) * scale - 0.5`，2→1024 时源坐标会跑到 -0.5 ~ 1.5，
+两端 clamp，导致渐变只占中间约一半。实测单通道最大差 18/255。
+`putdata` 版本比原来的逐像素 `putpixel` 循环更快，且输出逐像素一致。
+
+### 其它代码质量项
+
+- **`jxa()` 的返回值分隔符**：原来用 `", "` 切分，路径里带逗号就会切错。
+  改成各 JXA 脚本统一 `join(String.fromCharCode(10))` + Python 侧按行切分。
+  > 用 `String.fromCharCode(10)` 而不是 `'\n'`，因为在多层字符串里转义太容易写错
+  > （实测被工具链当成真换行写进过文件，直接把 JS 字符串弄断）。
+- **路径类型统一**：内部一律 `Path`，公开函数入口 `Path(...)` 兜底，
+  避免传 `str` 时 `out.parent` 抛 `AttributeError`。
+- **`dock_read()` 记忆化**：原来 `list` 里每个分组查一次 `dock_has` → N 次 `defaults export`。
+  加缓存后同一次命令只读一次，`dock_write` 负责同步缓存。
+- **别名播种加 Python 侧存在性判断**：全都在就直接跳过，连 osascript 都不起。
+
+### 回归验证方式
+
+改完不能只看「跑通了」。用 `git show <旧提交>:scripts/dockgroup.py` 把旧版取出来，
+新旧各渲染一遍，逐像素比：
+
+```python
+ImageStat.Stat(ImageChops.difference(old_img, new_img)).extrema   # 全为 0 才算没改坏
+```
+
+5 种风格全部 0/255。这一步正是靠它抓出了上面的渐变回归。

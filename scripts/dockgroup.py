@@ -133,6 +133,10 @@ FONT_CANDIDATES = [
 
 ICON_ENTRY = "Icon" + "\r"   # 文件夹自定义图标的载体文件
 
+# 缓存里 App 图标的边长上限。图标格子最大约 540px（单 App 分组时），512 足够；
+# 而 AppKit 产出的原图是 1297 KB 的 1024px，缩小后每次解码快约 4 倍。
+ICON_SRC_PX = 512
+
 
 # ─────────────────────────────────────────────────────────── 基础工具
 
@@ -157,6 +161,22 @@ function run(argv) {
   png.writeToFileAtomically($(argv[1]), true);
 }
 """,
+    # 批量取图标（argv 为 src1, out1, src2, out2, ...）。
+    # 每起一个 osascript 做 AppKit 图标渲染约 400ms，逐 App 起进程是最大的性能坑。
+    "grab_many": """
+ObjC.import('AppKit');
+function run(argv) {
+  const done = [];
+  for (let i = 0; i + 1 < argv.length; i += 2) {
+    const icon = $.NSWorkspace.sharedWorkspace.iconForFile(argv[i]);
+    icon.size = $.NSMakeSize(1024, 1024);
+    const rep = $.NSBitmapImageRep.imageRepWithData(icon.TIFFRepresentation);
+    const png = rep.representationUsingTypeProperties($.NSBitmapImageFileTypePNG, $());
+    done.push(png && png.writeToFileAtomically($(argv[i + 1]), true) ? 'ok' : 'fail');
+  }
+  return done.join(String.fromCharCode(10));
+}
+""",
     # 建真 Finder 别名（NSURLBookmarkCreationSuitableForBookmarkFile = 1<<10）
     "mkalias": """
 ObjC.import('Foundation');
@@ -175,7 +195,7 @@ function run(argv) {
     const du = $.NSURL.fileURLWithPath(dst);
     if ($.NSURL.writeBookmarkDataToURLOptionsError(data, du, 0, $())) made.push(base);
   }
-  return made;
+  return made.join(String.fromCharCode(10));
 }
 """,
     # 批量解析别名 → 真实路径（非别名原样返回）
@@ -188,7 +208,7 @@ function run(argv) {
     const r = $.NSURL.URLByResolvingAliasFileAtURLOptionsError(u, 256, $());
     out.push(r ? ObjC.unwrap(r.path) : '');
   }
-  return out;
+  return out.join(String.fromCharCode(10));
 }
 """,
     # 设置文件夹自定义图标：走 AppKit 官方 API，系统自己做 icns/资源分支处理
@@ -231,10 +251,13 @@ def jxa_path(key: str) -> Path:
 
 
 def jxa(key: str, *args):
+    """跑一段 JXA。返回值按行切分 —— 各脚本统一用 \\n 作分隔符，
+    这样路径里出现 ", " 也不会把结果切错；空行保留，维持「位置 ↔ 条目」的对应关系。"""
     r = sh(["osascript", "-l", "JavaScript", str(jxa_path(key))] + [str(a) for a in args])
     if r.returncode != 0:
         return None
-    return [x for x in r.stdout.strip().split(", ") if x] if r.stdout.strip() else []
+    out = r.stdout[:-1] if r.stdout.endswith("\n") else r.stdout
+    return out.split("\n") if out else []
 
 
 # ─────────────────────────────────────────────────────────── 配置
@@ -260,33 +283,77 @@ def find_group(cfg, name):
 
 # ─────────────────────────────────────────────────────────── 图标提取与合成
 
-def app_icon(app: Path):
-    """取 App 图标 PNG（按路径+mtime 缓存），失败返回 None。"""
+def _icon_cache(app: Path):
+    """图标缓存路径（按 路径 + mtime 作 key），App 不存在返回 None。"""
     if not app.exists():
         return None
     try:
         key = f"{app.stem}-{int(app.stat().st_mtime)}"
     except OSError:
         key = app.stem
-    out = CACHE / "app-icons" / f"{key}.png"
-    if out.exists() and out.stat().st_size > 0:
-        return out
-    out.parent.mkdir(parents=True, exist_ok=True)
-    jxa("grab", app, out)
-    return out if out.exists() and out.stat().st_size > 0 else None
+    return CACHE / "app-icons" / f"{key}.png"
+
+
+def _shrink_cache(png: Path):
+    """把缓存里的原图缩到 ICON_SRC_PX。写临时文件再替换，避免写坏缓存。"""
+    try:
+        im = Image.open(png)
+        if max(im.size) <= ICON_SRC_PX:
+            return
+        small = im.convert("RGBA").resize((ICON_SRC_PX, ICON_SRC_PX), Image.LANCZOS)
+        tmp = png.with_suffix(".tmp.png")
+        small.save(tmp, "PNG")
+        tmp.replace(png)
+    except Exception:
+        pass
+
+
+def app_icons(apps):
+    """批量取图标 → {Path: Path}。只起一个 osascript，缺哪个补哪个。"""
+    jobs, pending = {}, []
+    for a in apps:
+        out = _icon_cache(a)
+        if out is None:
+            continue
+        jobs[a] = out
+        if not (out.exists() and out.stat().st_size > 0):
+            pending += [str(a), str(out)]
+
+    if pending:
+        for p in jobs.values():
+            p.parent.mkdir(parents=True, exist_ok=True)
+        r = sh(["osascript", "-l", "JavaScript", str(jxa_path("grab_many"))] + pending)
+        if r.returncode != 0:   # 批量失败就逐个兜底，保证不会整组空图标
+            for i in range(0, len(pending), 2):
+                jxa("grab", pending[i], pending[i + 1])
+        for out in set(jobs.values()):
+            _shrink_cache(out)
+
+    return {a: p for a, p in jobs.items() if p.exists() and p.stat().st_size > 0}
+
+
+def app_icon(app: Path):
+    """单个 App 的图标路径（外部脚本/测试用的便捷包装）。"""
+    return app_icons([app]).get(app)
 
 
 def _vertical_gradient(size, top, bottom):
-    grad = Image.new("RGBA", (1, size))
-    for y in range(size):
-        t = y / max(size - 1, 1)
-        grad.putpixel((0, y), tuple(int(top[i] + (bottom[i] - top[i]) * t) for i in range(4)))
-    return grad.resize((size, size), Image.NEAREST)
+    """竖直渐变。逐行算好后一次性 putdata，避免 size 次 putpixel 调用。
+
+    注意别图省事改成「建 1x2 再 resize」：PIL 放大时按半像素对齐，
+    2 像素源会变成上下各约 1/4 是平的、只有中间是渐变。"""
+    span = max(size - 1, 1)
+    ramp = [tuple(int(top[i] + (bottom[i] - top[i]) * y / span) for i in range(4))
+            for y in range(size)]
+    row = Image.new("RGBA", (1, size))
+    row.putdata(ramp)
+    return row.resize((size, size), Image.NEAREST)
 
 
-def make_mosaic(icon_paths, out: Path, size: int = 1024,
+def make_mosaic(icon_paths, out, size: int = 1024,
                 style: str = DEFAULT_STYLE) -> Path:
     """把若干 App 图标合成一张 iOS 风格的文件夹图标。"""
+    out = Path(out)
     S = size
     st = STYLES.get(style, STYLES[DEFAULT_STYLE])
     inset = int(S * ICON_INSET)
@@ -315,9 +382,6 @@ def make_mosaic(icon_paths, out: Path, size: int = 1024,
         canvas.paste(grad, (0, 0), mask)
 
     d = ImageDraw.Draw(canvas)
-    if st.get("stroke"):
-        col, w = st["stroke"]
-        d.rounded_rectangle(box, radius=radius, outline=col, width=max(3, int(S * w)))
     if st["hair"]:
         # 内圈高光：玻璃质感来源
         d.rounded_rectangle(box, radius=radius, outline=st["hair"],
@@ -356,7 +420,8 @@ def make_mosaic(icon_paths, out: Path, size: int = 1024,
     return out
 
 
-def make_contact_sheet(items, out: Path, bg=(255, 255, 255, 255)) -> Path:
+def make_contact_sheet(items, out, bg=(255, 255, 255, 255)) -> Path:
+    out = Path(out)
     big, small, pad = 176, 64, 34
     w = max(560, pad + len(items) * (big + pad))
     h = pad + big + 46 + small + pad
@@ -389,7 +454,8 @@ def make_contact_sheet(items, out: Path, bg=(255, 255, 255, 255)) -> Path:
     return out
 
 
-def set_folder_icon(folder: Path, png: Path) -> bool:
+def set_folder_icon(folder, png) -> bool:
+    folder = Path(folder)
     """用 AppKit 官方 setIcon:forFile:options: 设置文件夹自定义图标。
 
     不要手写 Icon\\r + SetFile -a C：那样 Finder 认，但 IconServices 渲染不出，
@@ -404,7 +470,8 @@ LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Frameworks/"
               "LaunchServices.framework/Support/lsregister")
 
 
-def png_to_icns(png: Path, icns: Path) -> Path:
+def png_to_icns(png, icns) -> Path:
+    png, icns = Path(png), Path(icns)
     with tempfile.TemporaryDirectory() as td:
         iconset = Path(td) / "icon.iconset"
         iconset.mkdir()
@@ -542,7 +609,11 @@ def collect_apps(g, folder: Path, seed=True):
     """文件夹优先，为空时回落到配置里的 apps 列表。"""
     if seed:
         folder.mkdir(parents=True, exist_ok=True)
-        jxa("mkalias", folder, *[Path(a).expanduser() for a in g.get("apps", [])])
+        # 别名已存在就跳过，全都存在时连 osascript 都不起
+        todo = [Path(a).expanduser() for a in g.get("apps", [])
+                if not (folder / Path(a).expanduser().stem).exists()]
+        if todo:
+            jxa("mkalias", folder, *todo)
     apps = read_folder_apps(folder)
     if apps:
         return apps
@@ -560,7 +631,7 @@ def build_group(g, icons_only=False, style=DEFAULT_STYLE):
 
     missing = [n for n, t, _ in apps if not t.exists()]
     ok = [(n, t, a) for n, t, a in apps if t.exists()]
-    icon_paths = [p for p in (app_icon(t) for _, t, _ in ok) if p]
+    icon_paths = list(app_icons([t for _, t, _ in ok]).values())
     if not icon_paths:
         raise SystemExit(f"分组「{name}」未能提取到任何图标")
 
@@ -572,15 +643,25 @@ def build_group(g, icons_only=False, style=DEFAULT_STYLE):
 
 # ─────────────────────────────────────────────────────────── Dock 读写
 
-def dock_read() -> dict:
-    return plistlib.loads(sh(["defaults", "export", DOCK_DOMAIN, "-"]).stdout.encode())
+_dock_cache = None
+
+
+def dock_read(refresh: bool = False) -> dict:
+    """读 Dock 配置。同一次命令里反复读没意义，缓存住；
+    dock_write 会同步更新缓存，不会读到脏数据。"""
+    global _dock_cache
+    if _dock_cache is None or refresh:
+        _dock_cache = plistlib.loads(sh(["defaults", "export", DOCK_DOMAIN, "-"]).stdout.encode())
+    return _dock_cache
 
 
 def dock_write(pl: dict):
+    global _dock_cache
     data = plistlib.dumps(pl)
     BACKUP.mkdir(parents=True, exist_ok=True)
     (BACKUP / f"com.apple.dock-{datetime.now():%Y%m%d-%H%M%S}.plist").write_bytes(data)
     subprocess.run(["defaults", "import", DOCK_DOMAIN, "-"], input=data, check=True)
+    _dock_cache = pl
     sh(["killall", "Dock"])
 
 
@@ -878,6 +959,7 @@ def cmd_preview(cfg, args):
     only = set(args) if args else None
     style = cfg.get("style", DEFAULT_STYLE)
     items = []
+    # 不带参数时预览全部分组（预览是只读操作，不受 enabled 限制）
     for g in (cfg["groups"] if not only else [x for x in cfg["groups"] if x["name"] in only]):
         try:
             _, png, ok, _ = build_group(g, icons_only=True, style=style)
