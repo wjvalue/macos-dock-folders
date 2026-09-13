@@ -39,6 +39,8 @@ Dock 只支持把「文件夹」放进去，而且**文件夹的点击弹出网�
     list                  查看配置与 Dock 当前状态
     open    组名          在 Finder 里打开分组文件夹（往里面拖 App）
     test    组名          手动启动一次启动器，验证点击展开效果
+    logs    组名          查看该分组的运行日志（面板几何 + 点击事件轨迹）
+    logs    组名          查看该分组的运行日志（面板几何 + 点击事件轨迹）
     remove  组名...       从 Dock 移除（保留文件夹）
     clean   组名...       从 Dock 移除并删除文件夹
     watch-install         安装自动监听（文件夹一变就自动刷新图标）
@@ -1027,6 +1029,37 @@ def cmd_test(cfg, args):
     print(f"运行日志：{CACHE / (g['name'] + '.launch.log')}")
 
 
+def cmd_logs(cfg, args):
+    """查看某个分组的运行日志：面板几何 + 点击事件轨迹。"""
+    if not args:
+        sys.exit("用法：logs <组名>")
+    g = find_group(cfg, args[0])
+    if not g:
+        sys.exit(f"没有分组「{args[0]}」")
+    name = g["name"]
+    state, events = CACHE / f"{name}.launch.log", CACHE / f"{name}.events.log"
+
+    if state.exists():
+        print("— 面板几何（最近一次弹出）—")
+        for line in state.read_text(encoding="utf-8").splitlines():
+            print("  " + line)
+        print()
+    if events.exists():
+        lines = events.read_text(encoding="utf-8", errors="replace").splitlines()
+        print(f"— 事件轨迹（最后 {min(40, len(lines))} 行，共 {len(lines)} 行）—")
+        for line in lines[-40:]:
+            print("  " + line)
+        print()
+        print("  排查提示：")
+        print("   · 只有 === launch，没有 mouseDown hit item  → 点击没送达视图（窗口层级/事件路由问题）")
+        print("   · 有 mouseDown 但没有 launching            → 命中下标不对，目标路径有问题")
+        print("   · 有 launching 但 openApplication 报错      → LaunchServices 拒绝启动")
+        print("   · 出现 dismiss: click outside panel        → 被误判成点了面板外")
+    else:
+        print(f"还没有事件日志：{events}")
+        print("去点一次 Dock 上的分组图标，再跑这个命令。")
+
+
 def cmd_restore(cfg, args):
     if args:
         src = Path(args[0])
@@ -1054,7 +1087,7 @@ def main():
     table = {
         "doctor": cmd_doctor, "init": cmd_init, "new": cmd_new,
         "list": cmd_list, "preview": cmd_preview, "apply": cmd_apply,
-        "rebuild": cmd_rebuild, "open": cmd_open, "test": cmd_test,
+        "rebuild": cmd_rebuild, "open": cmd_open, "test": cmd_test, "logs": cmd_logs, "logs": cmd_logs,
         "remove": cmd_remove, "clean": cmd_clean,
         "watch-install": cmd_watch_install,
         "watch-uninstall": cmd_watch_uninstall, "restore": cmd_restore,

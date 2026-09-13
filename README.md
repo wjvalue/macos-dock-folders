@@ -93,6 +93,7 @@ dg rebuild               按文件夹现状刷新图标并重启 Dock
 dg list                  查看配置 + 文件夹现状 + Dock 挂载状态
 dg open    组名          在 Finder 里打开分组文件夹（往里面拖 App）
 dg test    组名          手动启动一次，验证点击展开效果
+dg logs    组名          查看运行日志（面板几何 + 点击事件轨迹）
 dg remove  组名...       从 Dock 移除（保留文件夹）
 dg clean   组名...       从 Dock 移除并删除文件夹
 dg watch-install         安装自动监听：文件夹一变就自动刷新图标
@@ -177,8 +178,10 @@ Dock 支持把文件夹放进去（Stack），但它有个硬限制：
 
 | 现象 | 处理 |
 |---|---|
+| 点击图标没反应 | 跑 `dg logs <组名>` 看事件轨迹，里面会直接告诉你断在哪一环（见下方说明） |
 | 点击打开的是 Finder 窗口 | 说明用的是文件夹 Stack 却在左侧 → 把 `placement` 改成 `left` 后 `apply` |
 | 点击没反应 | `dg test <组名>` 手动跑一次，看 `~/Dock Groups/.cache/<组名>.launch.log` |
+| 点击图标没反应 | 跑 `dg logs <组名>`，日志会指出断点：<br>· 只有 `=== launch`，没有 `mouseDown hit item` → 点击没送达视图<br>· 有 `mouseDown` 但没有 `launching` → 命中下标/路径有问题<br>· 有 `launching` 但 `openApplication` 报错 → LaunchServices 拒绝启动<br>· 出现 `dismiss: click outside panel` → 被误判成点了面板外 |
 | 弹出栏被 Dock 挡住 | 已修（历史 bug：`NSPanel.isFloatingPanel` 会把窗口层级压到 3）。重跑 `apply` 重新编译 |
 | 图标没跟着文件夹内容变 | `dg rebuild` |
 | Dock 条目被系统丢弃 | `dg restore` 回滚，再手动把 App 拖回 Dock |

@@ -106,8 +106,23 @@ $DG list / open / test / remove / clean / watch-install / restore
      —— 用 `visibleFrame` 而非 `frame`，这样面板永远不压到 Dock（侧边 Dock 同理）。
      早期用 `screen.frame` 会让面板往 Dock 里扎 30pt 左右。
    - 关闭：`NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown])`
-     → terminate（全局监听不会收到自己的点击，所以面板内按钮正常工作）
+     → terminate（全局监听不会收到自己的点击，所以面板内按钮正常工作），
+     但**必须加命中判断**：`if panel.frame.contains(NSEvent.mouseLocation) { return }`，
+     否则面板内的点击有概率被当成「点外面」而直接退出。
      + `didResignKeyNotification` 兜底 + `cancelOperation` 接 Esc。
+   - **格子不要用 NSButton**：在「非激活 App + 非激活面板」里，
+     `acceptsFirstMouse` 语义可能吞掉第一次 `mouseDown`（表现为「点图标没反应」）。
+     换成自绘 `NSView` 子类自己接 `mouseDown(with:)`，并显式
+     `override func acceptsFirstMouse(for:) -> Bool { true }`、
+     `override var mouseDownCanMoveWindow: Bool { false }`。
+   - **不要在 `mouseEntered` 里才开 layer backing**（`wantsLayer = true`）：
+     跟踪过程中切换 layer-backed 会让 AppKit 重建视图层级，可能打断鼠标跟踪。
+     `wantsLayer` / 圆角 / 背景色都在 `init` 里设好，事件回调只改颜色。
+   - 启动用 `NSWorkspace.openApplication(at:configuration:completionHandler:)`
+     并在回调里再 `terminate`；不要 `open(url)` 后立刻 `terminate`，也别忘记兜底定时器。
+   - **自检入口**：加一个环境变量（如 `DOCKGROUP_SELFTEST=<下标>`）启动后直接调用
+     和点击完全相同的 pick(index)，就能把「启动链路」和「点击送达」两个问题分开定位。
+     注意 `open` 不继承 shell 环境变量，要**直接跑 `Foo.app/Contents/MacOS/Foo`** 才能传入。
    - 已运行时再次点击图标 → 实现 `applicationShouldHandleReopen` 重新显示面板。
 
 8. **可观测性（无 GUI 权限时唯一能验证的手段）**：
@@ -142,7 +157,7 @@ $DG list / open / test / remove / clean / watch-install / restore
 | 现象 | 处理 |
 |---|---|
 | 点击打开的是 Finder 窗口 | 用的是文件夹 Stack 却在左侧 → `placement` 改 `left` 后 `apply` |
-| 点击没反应 | `test <组名>` 手动跑一次，看 `<落盘>/.cache/<组名>.launch.log` |
+| 点图标没反应 | `logs <组名>` 看事件轨迹：只有 `=== launch` 说明点击没送达视图；<br>有 `mouseDown` 无 `launching` 说明下标/路径有问题；<br>有 `launching` 但 `openApplication` 报错说明 LaunchServices 拒绝；<br>出现 `dismiss: click outside panel` 说明被误判成点了外面 |
 | 弹出栏被 Dock 挡住 | `isFloatingPanel` 把 level 压到 3 了 → 重跑 `apply` 重新编译 |
 | 图标没跟着文件夹内容变 | `rebuild`；装了 watch 看 `launchctl list \| grep dockgroup` |
 | Dock 条目被系统丢弃 | `restore` 回滚，改手动把 App 拖回 Dock |

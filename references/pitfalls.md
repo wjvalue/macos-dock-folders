@@ -221,3 +221,85 @@ App   ：内容占画布 86.5%（系统归一化到标准 App 图标框）
   中文渲染改用 `/System/Library/Fonts/Hiragino Sans GB.ttc`（index 2 = W6）。
   PIL 加载 `.ttc` 要传 `index`，否则可能拿到不含中文的 face。
 - **托管 Python 可能没有 Pillow**。用 `/usr/bin/python3`（系统自带 Pillow 11.x）。
+
+---
+
+## 10. 面板弹出来了，但点里面的图标没反应
+
+用户实测：面板正常弹出，点网格里的图标**一点反应都没有**。
+
+先把「启动」这条链路单独测通，把问题范围缩小。给启动器加一个自检入口：
+环境变量 `DOCKGROUP_SELFTEST=<下标>` 时，启动后直接调用和点击完全相同的 `pick(index)`：
+
+```
+[1789308972.186] === launch pid=34245 group=测试
+[1789308972.189] resolved 1 entries: Calculator
+[1789308972.246] panel shown frame={{638, 514}, {116, 122}} level=101 key=true
+[1789308972.247] selftest: picking index 0
+[1789308972.773] pick index=0 entries=1
+[1789308972.773] launching /System/Applications/Calculator.app
+[1789308973.042] openApplication result app=计算器 pid=34251 err=nil
+[1789308973.042] === exit
+```
+
+计算器确实被拉起（`pgrep` 验证过）—— 所以**解析路径、命中下标、LaunchServices 启动全部正常**，
+问题只可能在「点击有没有送到视图上」。
+
+> 小技巧：`open` 启动 App 不继承 shell 环境变量，所以自检要**直接跑 bundle 里的可执行文件**
+> （`Foo.app/Contents/MacOS/Foo`）才能把 `DOCKGROUP_SELFTEST` 传进去。
+> 直接跑可执行文件时 `Bundle.main` 仍能正确指向 .app，Info.plist 读得到。
+
+点击链路上一共有三个可疑点，全都在这一版里拆掉了：
+
+**① `NSButton` 的首次点击语义。** 在「非激活 App + 非激活面板」里，
+未被激活的窗口上的控件可能因为 `acceptsFirstMouse` 返回 false 而吞掉第一次 `mouseDown`
+（第一次点击只用来激活窗口）。虽然面板本身是 key 的（日志里 `key=true`），但这个语义不值得赌。
+
+→ 换成自绘的 `NSView` 子类（`ItemView`），自己接 `mouseDown(with:)`，并显式：
+
+```swift
+override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+override var mouseDownCanMoveWindow: Bool { false }
+```
+
+**② 在事件回调里打开 layer backing。** 旧版在 `mouseEntered` 里才写 `wantsLayer = true`。
+在跟踪过程中把视图切换成 layer-backed 会导致 AppKit 重建视图层级，
+有概率打断正在进行的鼠标跟踪。
+
+→ `wantsLayer` / 圆角 / 背景色全部在 `init` 里设好，事件回调里只改颜色。
+
+**③ 全局监视器把面板内的点击误判成「点外面」。** 旧版是：
+
+```swift
+NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { _ in
+    NSApp.terminate(nil)          // ← 无条件退出
+}
+```
+
+按理全局监视器收不到自己窗口的事件，但这里不能「按理」。
+
+→ 加命中判断，落在面板框内就忽略：
+
+```swift
+if p.frame.contains(NSEvent.mouseLocation) {
+    trace("global monitor fired INSIDE panel frame -> ignored")
+    return
+}
+```
+
+### 做法：把事件轨迹写成日志
+
+无法手动点击的环境里，唯一能定位的办法是让程序把每一步都记下来。
+现在 `<落盘>/.cache/<组名>.events.log` 是追加式的事件轨迹，
+配合 `dg logs <组名>` 直接给出断点判断：
+
+| 日志里看到 | 说明 |
+|---|---|
+| 只有 `=== launch`，没有 `mouseDown hit item` | 点击没送达视图（窗口层级 / 事件路由） |
+| 有 `mouseDown` 但没有 `launching` | 命中下标不对，或目标路径失效 |
+| 有 `launching` 但 `openApplication` 报错 | LaunchServices 拒绝启动 |
+| 出现 `dismiss: click outside panel` | 被误判成点了面板外 |
+
+面板几何单独存 `<组名>.launch.log`（覆盖式 JSON），便于脚本校验定位；
+事件轨迹存 `<组名>.events.log`（追加式），两者分开，互不干扰。
+

@@ -18,42 +18,107 @@ let kCellW: CGFloat = 84
 let kCellH: CGFloat = 90
 let kPad: CGFloat = 16
 let kGap: CGFloat = 4
-let kMaxCols = 4
 
 struct Entry {
     let title: String
     let path: String
 }
 
+// ─── 事件日志（无 GUI 权限时唯一的排查手段）──────────────────
+var logPath = ""
+var eventLogPath = ""
+
+func trace(_ msg: String) {
+    guard !eventLogPath.isEmpty else { return }
+    let ts = String(format: "%.3f", Date().timeIntervalSince1970)
+    let line = "[\(ts)] \(msg)\n"
+    if let fh = FileHandle(forWritingAtPath: eventLogPath) {
+        fh.seekToEndOfFile()
+        fh.write(line.data(using: .utf8)!)
+        try? fh.close()
+    } else {
+        try? line.write(toFile: eventLogPath, atomically: true, encoding: .utf8)
+    }
+}
+
 // ─── 面板 ──────────────────────────────────────────────────
 final class LauncherPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
-    override func cancelOperation(_ sender: Any?) { NSApp.terminate(nil) }  // Esc
+    override func cancelOperation(_ sender: Any?) {
+        trace("dismiss: Esc")
+        NSApp.terminate(nil)
+    }
 }
 
-// ─── 带悬停高亮的图标按钮 ──────────────────────────────────
-final class IconButton: NSButton {
+// ─── 网格里的一个图标格子 ──────────────────────────────────
+//
+// 刻意不用 NSButton：NSButton 在「非激活 App 的非激活面板」里可能因为
+// 首次点击语义（acceptsFirstMouse）而吞掉 mouseDown。这里自己画 + 自己接
+// mouseDown，并显式 acceptsFirstMouse = true，链路上不留不确定因素。
+final class ItemView: NSView {
+    private let index: Int
+    private let title: String
+    private let icon: NSImage
+    private let onPick: (Int) -> Void
     private var area: NSTrackingArea?
+
+    init(index: Int, title: String, icon: NSImage, frame: NSRect,
+         onPick: @escaping (Int) -> Void) {
+        self.index = index
+        self.title = title
+        self.icon = icon
+        self.onPick = onPick
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = 12
+        layer?.backgroundColor = NSColor.clear.cgColor
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    // 关键：允许「第一次点击」就落到本视图上，哪怕 App 不是激活状态
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let a = area { removeTrackingArea(a) }
         let a = NSTrackingArea(rect: bounds,
-                               options: [.mouseEnteredAndExited, .activeAlways],
+                               options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
                                owner: self, userInfo: nil)
         addTrackingArea(a)
         area = a
     }
 
     override func mouseEntered(with event: NSEvent) {
-        wantsLayer = true
-        layer?.cornerRadius = 12
         layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.18).cgColor
     }
 
     override func mouseExited(with event: NSEvent) {
         layer?.backgroundColor = NSColor.clear.cgColor
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let iconY = bounds.height - 8 - kIcon
+        icon.draw(in: NSRect(x: (bounds.width - kIcon) / 2, y: iconY,
+                             width: kIcon, height: kIcon))
+
+        let ps = NSMutableParagraphStyle()
+        ps.alignment = .center
+        ps.lineBreakMode = .byTruncatingTail
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11),
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: ps,
+        ]
+        NSAttributedString(string: title, attributes: attrs)
+            .draw(in: NSRect(x: 2, y: 4, width: bounds.width - 4, height: 15))
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        trace("mouseDown hit item index=\(index) title=\(title)")
+        onPick(index)
     }
 }
 
@@ -61,6 +126,7 @@ final class IconButton: NSButton {
 final class Delegate: NSObject, NSApplicationDelegate {
     private var panel: LauncherPanel?
     private var shown = false
+    private var finished = false
 
     private var groupName: String {
         (Bundle.main.object(forInfoDictionaryKey: "DockGroupName") as? String) ?? "group"
@@ -68,17 +134,31 @@ final class Delegate: NSObject, NSApplicationDelegate {
     private var folderPath: String {
         (Bundle.main.object(forInfoDictionaryKey: "DockGroupFolder") as? String) ?? ""
     }
-    /// 日志目录由 Info.plist 注入（跟着 DOCKGROUP_HOME 走），仅在缺失时回落
     private var logDir: String {
         (Bundle.main.object(forInfoDictionaryKey: "DockGroupLogDir") as? String)
             ?? (NSHomeDirectory() + "/Dock Groups/.cache")
     }
 
     func applicationDidFinishLaunching(_ note: Notification) {
+        logPath = logDir + "/\(groupName).launch.log"
+        eventLogPath = logDir + "/\(groupName).events.log"
+        try? FileManager.default.createDirectory(atPath: logDir, withIntermediateDirectories: true)
+        trace("=== launch pid=\(ProcessInfo.processInfo.processIdentifier) group=\(groupName)")
+
         let entries = Self.readEntries(folder: folderPath)
+        trace("resolved \(entries.count) entries: "
+              + entries.map { $0.title }.joined(separator: " / "))
+
         buildPanel(entries)
         installDismissMonitors()
         showPanel(entries: entries.count)
+
+        // 自检模式：DOCKGROUP_SELFTEST=<下标> 时直接走一次 pick，
+        // 用于在无法真实点击的环境里验证「启动」这条链路。
+        if let s = ProcessInfo.processInfo.environment["DOCKGROUP_SELFTEST"], let i = Int(s) {
+            trace("selftest: picking index \(i)")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.pick(i) }
+        }
     }
 
     func applicationShouldHandleReopen(_ app: NSApplication, hasVisibleWindows: Bool) -> Bool {
@@ -109,7 +189,7 @@ final class Delegate: NSObject, NSApplicationDelegate {
     // ── 构建面板
     private func buildPanel(_ entries: [Entry]) {
         let n = max(entries.count, 1)
-        let cols = min(kMaxCols, n)
+        let cols = min(4, n)
         let rows = Int(ceil(Double(n) / Double(cols)))
         let w = kPad * 2 + CGFloat(cols) * kCellW + CGFloat(cols - 1) * kGap
         let h = kPad * 2 + CGFloat(rows) * kCellH + CGFloat(rows - 1) * kGap
@@ -143,22 +223,13 @@ final class Delegate: NSObject, NSApplicationDelegate {
             let r = i / cols, c = i % cols
             let x = kPad + CGFloat(c) * (kCellW + kGap)
             let y = h - kPad - CGFloat(r + 1) * kCellH - CGFloat(r) * kGap
-            let b = IconButton(frame: NSRect(x: x, y: y, width: kCellW, height: kCellH))
-            b.isBordered = false
-            b.bezelStyle = .inline
-            b.imagePosition = .imageAbove
-            b.imageScaling = .scaleProportionallyUpOrDown
             let icon = NSWorkspace.shared.icon(forFile: item.path)
             icon.size = NSSize(width: kIcon, height: kIcon)
-            b.image = icon
-            b.title = item.title
-            b.font = .systemFont(ofSize: 11)
-            b.contentTintColor = .labelColor
-            b.toolTip = item.path
-            b.target = self
-            b.action = #selector(launch(_:))
-            b.tag = i
-            bg.addSubview(b)
+            let view = ItemView(index: i, title: item.title, icon: icon,
+                                frame: NSRect(x: x, y: y, width: kCellW, height: kCellH)) {
+                [weak self] idx in self?.pick(idx)
+            }
+            bg.addSubview(view)
         }
         panel = p
     }
@@ -184,36 +255,72 @@ final class Delegate: NSObject, NSApplicationDelegate {
         p.setFrameOrigin(NSPoint(x: x, y: y))
         p.makeKeyAndOrderFront(nil)
         shown = true
-        writeLog(frame: p.frame, screen: full, visible: vis, count: entries ?? 0)
+        trace("panel shown frame=\(NSStringFromRect(p.frame)) "
+              + "level=\(p.level.rawValue) key=\(p.isKeyWindow)")
+        writeState(frame: p.frame, screen: full, visible: vis, count: entries ?? 0)
     }
 
-    // ── 关闭方式：点击别处 / 失焦
+    // ── 关闭方式：点击面板外 / 失焦
     private func installDismissMonitors() {
-        NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { _ in
-            NSApp.terminate(nil)
+        NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            guard let self, let p = self.panel else { return }
+            // 全局监视器按理收不到自己窗口的事件；万一路径异常收到，
+            // 也要保证面板内部的点击不会被当成「点外面」而误退出。
+            if p.frame.contains(NSEvent.mouseLocation) {
+                trace("global monitor fired INSIDE panel frame -> ignored")
+                return
+            }
+            trace("dismiss: click outside panel")
+            self.finish()
         }
         NotificationCenter.default.addObserver(
             forName: NSWindow.didResignKeyNotification,
             object: panel, queue: .main
         ) { [weak self] _ in
-            guard let self, self.shown else { return }
-            NSApp.terminate(nil)
+            guard let self, self.shown, !self.finished else { return }
+            trace("dismiss: panel resigned key")
+            self.finish()
         }
     }
 
-    @objc private func launch(_ sender: NSButton) {
+    // ── 选中某一项：启动对应 App
+    private func pick(_ index: Int) {
         let entries = Self.readEntries(folder: folderPath)
-        guard sender.tag >= 0, sender.tag < entries.count else { NSApp.terminate(nil); return }
-        let url = URL(fileURLWithPath: entries[sender.tag].path)
-        panel?.orderOut(nil)
-        NSWorkspace.shared.open(url)
+        trace("pick index=\(index) entries=\(entries.count)")
+        guard index >= 0, index < entries.count else {
+            trace("pick out of range, abort")
+            finish()
+            return
+        }
+        let url = URL(fileURLWithPath: entries[index].path)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            trace("target missing: \(url.path)")
+            finish()
+            return
+        }
+
+        trace("launching \(url.path)")
+        let cfg = NSWorkspace.OpenConfiguration()
+        cfg.activates = true
+        NSWorkspace.shared.openApplication(at: url, configuration: cfg) { app, err in
+            trace("openApplication result app=\(app?.localizedName ?? "nil") "
+                  + "pid=\(app?.processIdentifier ?? -1) "
+                  + "err=\(err?.localizedDescription ?? "nil")")
+            DispatchQueue.main.async { self.finish() }
+        }
+        // 兜底：万一回调不来，也不能把面板留在屏幕上
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { self.finish() }
+    }
+
+    private func finish() {
+        guard !finished else { return }
+        finished = true
+        trace("=== exit")
         NSApp.terminate(nil)
     }
 
-    // ── 写日志，方便外部验证（无 GUI 权限时的可观测手段）
-    private func writeLog(frame: NSRect, screen: NSRect, visible: NSRect, count: Int) {
-        let dir = logDir
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    // ── 面板几何状态（供外部脚本校验定位）
+    private func writeState(frame: NSRect, screen: NSRect, visible: NSRect, count: Int) {
         let payload: [String: Any] = [
             "group": groupName,
             "count": count,
@@ -229,7 +336,7 @@ final class Delegate: NSObject, NSApplicationDelegate {
             "onScreen": screen.contains(NSPoint(x: frame.midX, y: frame.midY)),
         ]
         if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]) {
-            try? data.write(to: URL(fileURLWithPath: dir + "/\(groupName).launch.log"))
+            try? data.write(to: URL(fileURLWithPath: logPath))
         }
     }
 }
