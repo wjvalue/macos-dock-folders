@@ -589,7 +589,7 @@ def build_launcher_app(g, style=DEFAULT_STYLE, force=False,
         "CFBundleIconFile": "AppIcon",
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": "1.0",
-        "CFBundleVersion": "1",
+        "CFBundleVersion": "placeholder",   # 下面按内容摘要填，变了才让 Dock 刷图标
         "LSMinimumSystemVersion": "12.0",
         "LSUIElement": True,
         "NSHighResolutionCapable": True,
@@ -602,9 +602,17 @@ def build_launcher_app(g, style=DEFAULT_STYLE, force=False,
     # 图标 / Info.plist / 签名只在内容真的变了才重写。
     # 每次重建都会改动 bundle 内容，LaunchServices 会因此作废该 App 的记录，
     # 之后再点就报「应用程序"X"已不能再打开」。内容没变就一个字节都别动。
-    stamp = CACHE / f"{name}.bundle-stamp"
+    #
+    # 但反过来有个坑：bundle 路径和 CFBundleVersion 都不变时，
+    # IconServices 会一直用旧图标缓存 —— 我们这边换了灰底，Dock 还显示旧的白底。
+    # 所以让 CFBundleVersion 跟着内容摘要走：图标一变版本号就变，Dock 才会刷新。
+    core = {k: v for k, v in plist.items() if k != "CFBundleVersion"}
     digest = hashlib.sha256(
-        plistlib.dumps(plist) + mosaic.read_bytes()).hexdigest()
+        plistlib.dumps(core) + mosaic.read_bytes()).hexdigest()
+    plist["CFBundleVersion"] = digest[:8]
+    plist["CFBundleShortVersionString"] = "1.0." + digest[:6]
+
+    stamp = CACHE / f"{name}.bundle-stamp"
     if force or not stamp.exists() or stamp.read_text().strip() != digest:
         png_to_icns(mosaic, icon)
         with info.open("wb") as f:
@@ -613,6 +621,13 @@ def build_launcher_app(g, style=DEFAULT_STYLE, force=False,
         stamp.write_text(digest)
         if Path(LSREGISTER).exists():
             sh([LSREGISTER, "-f", str(app)])
+        # 关键：IconServices 按 bundle 的 mtime 缓存图标。
+        # 原地改内容而不改 mtime，Dock 会一直显示旧图标（实测踩过）。
+        for d_ in (app, app / "Contents", app / "Contents/Resources", icon):
+            try:
+                os.utime(d_, None)
+            except OSError:
+                pass
     return app, ok, missing
 
 
@@ -704,6 +719,7 @@ def dock_write(pl: dict):
     subprocess.run(["defaults", "import", DOCK_DOMAIN, "-"], input=data, check=True)
     _dock_cache = pl
     sh(["killall", "Dock"])
+    sh(["killall", "Finder"])
 
 
 def tile_label(tile: dict):
