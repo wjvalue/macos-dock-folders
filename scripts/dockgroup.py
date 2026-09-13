@@ -130,7 +130,7 @@ STYLES = {
         hair=(255, 255, 255, 155), edge=((0, 0, 0, 155), 0.0025),
         cell=0.440, pad=0.085, gap=0.045, shadow=True, icon_shadow=False),
 }
-DEFAULT_STYLE = "dock"
+DEFAULT_STYLE = "graphite"
 DEFAULT_MATERIAL = "menu"
 
 # 预览图字体（macOS 26 已移除 PingFang.ttc）

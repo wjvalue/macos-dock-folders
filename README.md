@@ -31,7 +31,7 @@ iPhone 早就用文件夹解决了，但 macOS **从来没把这个交互搬过�
 - **图标是实时合成的** —— 读取组内每个 App 的原始图标，拼成 2×2 拼贴图；App 换图标后重跑一次就同步
 - **可以放在左侧 App 区** —— 位置就在被折叠 App 原来待的地方，不是被甩到最右边
 - **分组文件夹是唯一事实来源** —— 往文件夹里拖 App 就等于加进分组，不需要改配置
-- **7 种图标风格** —— 默认 `dock`（与 Dock 栏同调的浅灰），另有 `dock-deep` / `paper` / `frost-light` / `frost-blue` / `graphite` / `glass-dark`
+- **7 种图标风格** —— 默认 `graphite`（深灰底，白底 App 图标在上面最清楚），另有 `dock` / `dock-deep` / `paper` / `frost-light` / `frost-blue` / `glass-dark`
 - **一键回滚** —— 每次改 Dock 前自动备份 plist，`restore` 秒回原样
 
 ## 界面与风格
