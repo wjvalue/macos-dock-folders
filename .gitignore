@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# 用户配置（实际配置在 ~/Dock Groups/groups.json）
+groups.json
+groups.local.json
+
+# 构建产物
+*.icns
+*.app/
+build/
+
+# macOS
+.DS_Store
+Icon?
