@@ -492,3 +492,48 @@ if let vis = NSScreen.screens.first(where: { NSMouseInRect(m, $0.frame, false) }
 ```bash
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/<旧label>.plist
 ```
+
+---
+
+## 13. 纯白底板会让白底 App 图标糊掉
+
+用户反馈：**背景太白，有的应用图标不太好辨认**。
+
+原因很具体：很多 App 图标本身就是**白色的圆角方块**（Hermes、WorkBuddy、
+以及不少开发工具都是），把这样的图标放进纯白底板：
+
+```
+纯白底板 (255) + 白底图标 (255)  →  边界消失，只剩中间的彩色 logo 可见，图标形状丢了
+```
+
+这不是「图标做得不好」，是**底板与图标同色**导致的。两条修法一起上：
+
+### ① 底板改成与 Dock 栏同调的浅灰
+
+新增 `dock` 风格，上下渐变 `(238,239,243)` → `(212,214,222)`，而不是 `(255,…)`。
+白底图标在这个灰度上就显出轮廓了。图标本身偏灰白的还可以再用 `dock-deep`
+（`(226,228,234)` → `(188,191,203)`），对比更强。
+
+### ② 每个 App 图标叠一层很轻的投影
+
+只换底色还不够 —— 白图标在白/浅灰底上依然只有「半个」可见。给每个格子里的图标
+加一层柔和投影，轮廓才真正立起来（iOS 的主屏图标也做了同样的事）：
+
+```python
+def _drop_shadow(canvas, icon, pos, blur=0.011, offset=0.007, strength=0.34):
+    S = canvas.width
+    mask = Image.new("L", canvas.size, 0)
+    mask.paste(icon.split()[3], (pos[0], pos[1] + max(1, int(S * offset))))
+    mask = mask.filter(ImageFilter.GaussianBlur(max(2, int(S * blur))))
+    mask = mask.point(lambda v: int(v * strength))
+    canvas.paste(Image.new("RGBA", canvas.size, (30, 32, 42, 255)), (0, 0), mask)
+```
+
+参数按画布边长的比例给（blur 1.1%、下移 0.7%、强度 0.34），这样换尺寸不用重调。
+只在浅色风格上开（`icon_shadow=True`）；深色风格上阴影没有意义。
+
+### 选风格的方法论
+
+一定要做一张**「把候选图标夹在真实 App 图标中间、按真实 Dock 尺寸并排」**的对比图。
+单独看大图很容易选错 —— 白色底板单看挺干净，放进 Dock 一比就发现它和邻居的
+白底图标糊在一起了。

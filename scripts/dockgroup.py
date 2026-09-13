@@ -99,28 +99,38 @@ BG_RADIUS = 0.235       # 文件夹底圆角
 #   pad/gap: 网格内边距 / 格子间距（占文件夹边长比例）
 #   shadow: 是否加投影（让图标从 Dock 上"浮"起来）
 STYLES = {
-    "frost-light": dict(
-        bg=((248, 249, 252, 248), (196, 201, 213, 251)),
-        hair=(255, 255, 255, 205), edge=((112, 116, 132, 115), 0.0025),
-        cell=0.440, pad=0.085, gap=0.045, shadow=True),
-    "frost-blue": dict(
-        bg=((224, 235, 251, 249), (154, 182, 222, 251)),
-        hair=(255, 255, 255, 210), edge=((74, 108, 158, 120), 0.0025),
-        cell=0.440, pad=0.085, gap=0.045, shadow=True),
-    "glass-dark": dict(
-        bg=((90, 91, 101, 249), (28, 29, 35, 252)),
-        hair=(255, 255, 255, 125), edge=((0, 0, 0, 145), 0.0025),
-        cell=0.440, pad=0.085, gap=0.045, shadow=True),
-    "graphite": dict(
-        bg=((124, 126, 136, 250), (68, 70, 80, 252)),
-        hair=(255, 255, 255, 155), edge=((0, 0, 0, 155), 0.0025),
-        cell=0.440, pad=0.085, gap=0.045, shadow=True),
+    # 与 Dock 栏同调的浅灰（默认）。白底 App 图标在这个灰度上能显出形状
+    "dock": dict(
+        bg=((238, 239, 243, 252), (212, 214, 222, 253)),
+        hair=(255, 255, 255, 195), edge=((132, 135, 148, 125), 0.0025),
+        cell=0.440, pad=0.085, gap=0.045, shadow=True, icon_shadow=True),
+    # 比 dock 再深一档，白图标对比更强
+    "dock-deep": dict(
+        bg=((226, 228, 234, 252), (188, 191, 203, 253)),
+        hair=(255, 255, 255, 205), edge=((110, 114, 129, 142), 0.0025),
+        cell=0.440, pad=0.085, gap=0.045, shadow=True, icon_shadow=True),
     "paper": dict(
         bg=((255, 255, 255, 253), (238, 239, 244, 253)),
         hair=(255, 255, 255, 225), edge=((146, 149, 160, 135), 0.0022),
-        cell=0.440, pad=0.085, gap=0.045, shadow=True),
+        cell=0.440, pad=0.085, gap=0.045, shadow=True, icon_shadow=True),
+    "frost-light": dict(
+        bg=((248, 249, 252, 248), (196, 201, 213, 251)),
+        hair=(255, 255, 255, 205), edge=((112, 116, 132, 115), 0.0025),
+        cell=0.440, pad=0.085, gap=0.045, shadow=True, icon_shadow=True),
+    "frost-blue": dict(
+        bg=((224, 235, 251, 249), (154, 182, 222, 251)),
+        hair=(255, 255, 255, 210), edge=((74, 108, 158, 120), 0.0025),
+        cell=0.440, pad=0.085, gap=0.045, shadow=True, icon_shadow=True),
+    "glass-dark": dict(
+        bg=((90, 91, 101, 249), (28, 29, 35, 252)),
+        hair=(255, 255, 255, 125), edge=((0, 0, 0, 145), 0.0025),
+        cell=0.440, pad=0.085, gap=0.045, shadow=True, icon_shadow=False),
+    "graphite": dict(
+        bg=((124, 126, 136, 250), (68, 70, 80, 252)),
+        hair=(255, 255, 255, 155), edge=((0, 0, 0, 155), 0.0025),
+        cell=0.440, pad=0.085, gap=0.045, shadow=True, icon_shadow=False),
 }
-DEFAULT_STYLE = "paper"
+DEFAULT_STYLE = "dock"
 
 # 预览图字体（macOS 26 已移除 PingFang.ttc）
 FONT_CANDIDATES = [
@@ -350,6 +360,21 @@ def _vertical_gradient(size, top, bottom):
     return row.resize((size, size), Image.NEAREST)
 
 
+def _drop_shadow(canvas, icon, pos, blur=0.011, offset=0.007, strength=0.34):
+    """在 canvas 上、icon 位置的下方画一层柔和投影。
+
+    为什么需要：白底的 App 图标（Hermes / WorkBuddy 这类白圆角方块）
+    放在浅色底板上会和背景糊成一片，只剩中间的黑 logo 能看见，形状丢了。
+    加一层投影，图标的轮廓就立起来了。
+    """
+    S = canvas.width
+    mask = Image.new("L", canvas.size, 0)
+    mask.paste(icon.split()[3], (pos[0], pos[1] + max(1, int(S * offset))))
+    mask = mask.filter(ImageFilter.GaussianBlur(max(2, int(S * blur))))
+    mask = mask.point(lambda v: int(v * strength))
+    canvas.paste(Image.new("RGBA", canvas.size, (30, 32, 42, 255)), (0, 0), mask)
+
+
 def make_mosaic(icon_paths, out, size: int = 1024,
                 style: str = DEFAULT_STYLE) -> Path:
     """把若干 App 图标合成一张 iOS 风格的文件夹图标。"""
@@ -408,12 +433,16 @@ def make_mosaic(icon_paths, out, size: int = 1024,
         slots = [(pad, pad), (pad + cell + gap, pad),
                  (pad, pad + cell + gap), (pad + cell + gap, pad + cell + gap)]
 
+    with_icon_shadow = st.get("icon_shadow", False)
     for i, ip in enumerate(icon_paths[:4]):
         try:
             ic = Image.open(ip).convert("RGBA").resize((cell, cell), Image.LANCZOS)
         except Exception:
             continue
-        canvas.alpha_composite(ic, (inset + slots[i][0], inset + slots[i][1]))
+        pos = (inset + slots[i][0], inset + slots[i][1])
+        if with_icon_shadow:
+            _drop_shadow(canvas, ic, pos)
+        canvas.alpha_composite(ic, pos)
 
     out.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(out, "PNG")
