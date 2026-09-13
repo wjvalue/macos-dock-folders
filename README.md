@@ -4,7 +4,7 @@
 
 **iPhone-style app folders for your macOS Dock — without a third-party dock replacement.**
 
-把 macOS Dock 里的一堆 App 折叠成一个可点击展开的图标，零第三方软件、零后台常驻。
+把 macOS Dock 里的一堆 App 折叠成一个可点击展开的图标 —— 不改系统 Dock，不装 Dock 替代品。
 
 ![界面示意](docs/panel.png)
 
@@ -27,7 +27,7 @@ iPhone 早就用文件夹解决了，但 macOS **从来没把这个交互搬过�
 
 ## 特性
 
-- **不需要第三方 Dock** —— 不改系统 Dock，不装 Dock 替代品，不常驻后台进程
+- **不需要第三方 Dock** —— 不改系统 Dock，不装 Dock 替代品，没有常驻守护进程（启动器只在用过后短暂驻留，10 分钟无操作自动退出）
 - **图标是实时合成的** —— 读取组内每个 App 的原始图标，拼成 2×2 拼贴图；App 换图标后重跑一次就同步
 - **可以放在左侧 App 区** —— 位置就在被折叠 App 原来待的地方，不是被甩到最右边
 - **分组文件夹是唯一事实来源** —— 往文件夹里拖 App 就等于加进分组，不需要改配置
@@ -178,10 +178,9 @@ Dock 支持把文件夹放进去（Stack），但它有个硬限制：
 
 | 现象 | 处理 |
 |---|---|
-| 点击图标没反应 | 跑 `dg logs <组名>` 看事件轨迹，里面会直接告诉你断在哪一环（见下方说明） |
-| 点击打开的是 Finder 窗口 | 说明用的是文件夹 Stack 却在左侧 → 把 `placement` 改成 `left` 后 `apply` |
-| 点击没反应 | `dg test <组名>` 手动跑一次，看 `~/Dock Groups/.cache/<组名>.launch.log` |
 | 点击图标没反应 | 跑 `dg logs <组名>`，日志会指出断点：<br>· 只有 `=== launch`，没有 `mouseDown hit item` → 点击没送达视图<br>· 有 `mouseDown` 但没有 `launching` → 命中下标/路径有问题<br>· 有 `launching` 但 `openApplication` 报错 → LaunchServices 拒绝启动<br>· 出现 `dismiss: click outside panel` → 被误判成点了面板外 |
+| 提示「应用程序"X"已不能再打开」 | 两种成因，都已修：<br>① 旧版每次 `apply/rebuild` 都重写 bundle，LaunchServices 因此作废 App 记录 → 现在内容没变就一个字节都不动<br>② 旧版用完立刻退出进程，连点时 Dock 会尝试再启动一个实例被拒 → 现在启动器常驻，第二次点击走 reopen 切换 |
+| 点击打开的是 Finder 窗口 | 说明用的是文件夹 Stack 却在左侧 → 把 `placement` 改成 `left` 后 `apply` |
 | 弹出栏被 Dock 挡住 | 已修（历史 bug：`NSPanel.isFloatingPanel` 会把窗口层级压到 3）。重跑 `apply` 重新编译 |
 | 图标没跟着文件夹内容变 | `dg rebuild` |
 | Dock 条目被系统丢弃 | `dg restore` 回滚，再手动把 App 拖回 Dock |
@@ -202,6 +201,9 @@ ln -s "$PWD" ~/.workbuddy/skills/macos-dock-folders
 
 - 左侧模式依赖手写 `persistent-apps`。macOS 不让你拖，但接受 plist 写入（已实测重启 Dock 后保留）。
   这种写法**不保证跨系统大版本升级继续有效**，所以备份机制是必需的。
+- **启动器是常驻式的**：面板收起后进程会留 10 分钟（`DOCKGROUP_IDLE_SECONDS` 可调），之后再点就是
+  秒开。不「用完即退」是刻意的 —— 见下方排障表里「已不能再打开」那条。
+  一个空闲的 accessory 进程，不占 Dock 图标、不进 Cmd-Tab。
 - 面板位置基于点击瞬间的鼠标坐标，因此只有从 Dock 点击才精准；从终端启动会弹在鼠标当前位置。
 - 文件夹 Stack 模式（`placement: "right"`）只能待在 Dock 分隔线右侧，这是系统限制。
 

@@ -19,6 +19,19 @@ let kCellH: CGFloat = 90
 let kPad: CGFloat = 16
 let kGap: CGFloat = 4
 
+// 面板收起后多久自动退出进程。
+// 为什么不做成「用完立刻退出」：那时第二个实例还没退干净，你再点 Dock 图标，
+// Dock 会尝试再启动一个实例，被 LaunchServices 拒绝并弹
+// 「应用程序"X"已不能再打开」。常驻一小段时间就能让第二次点击走 reopen 路径。
+// 可用 DOCKGROUP_IDLE_SECONDS 覆盖（测试用）。
+let kIdleSeconds: TimeInterval = {
+    if let s = ProcessInfo.processInfo.environment["DOCKGROUP_IDLE_SECONDS"],
+       let v = Double(s) {
+        return v
+    }
+    return 600
+}()
+
 struct Entry {
     let title: String
     let path: String
@@ -43,11 +56,12 @@ func trace(_ msg: String) {
 
 // ─── 面板 ──────────────────────────────────────────────────
 final class LauncherPanel: NSPanel {
+    var onCancel: (() -> Void)?
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
     override func cancelOperation(_ sender: Any?) {
         trace("dismiss: Esc")
-        NSApp.terminate(nil)
+        onCancel?()
     }
 }
 
@@ -126,7 +140,8 @@ final class ItemView: NSView {
 final class Delegate: NSObject, NSApplicationDelegate {
     private var panel: LauncherPanel?
     private var shown = false
-    private var finished = false
+    private var leaving = false
+    private var idleTimer: Timer?
 
     private var groupName: String {
         (Bundle.main.object(forInfoDictionaryKey: "DockGroupName") as? String) ?? "group"
@@ -158,11 +173,19 @@ final class Delegate: NSObject, NSApplicationDelegate {
         if let s = ProcessInfo.processInfo.environment["DOCKGROUP_SELFTEST"], let i = Int(s) {
             trace("selftest: picking index \(i)")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.pick(i) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { self.quit() }
         }
     }
 
     func applicationShouldHandleReopen(_ app: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        showPanel(entries: nil)   // 已在运行时再次点击 Dock 图标
+        // 再次点击 Dock 图标：面板开着就收起，收起就展开（相当于切换）
+        if panel?.isVisible == true {
+            trace("reopen -> toggle close")
+            hidePanel()
+        } else {
+            trace("reopen -> toggle open")
+            showPanel(entries: Self.readEntries(folder: folderPath).count)
+        }
         return true
     }
 
@@ -231,6 +254,7 @@ final class Delegate: NSObject, NSApplicationDelegate {
             }
             bg.addSubview(view)
         }
+        p.onCancel = { [weak self] in self?.hidePanel() }
         panel = p
     }
 
@@ -255,6 +279,7 @@ final class Delegate: NSObject, NSApplicationDelegate {
         p.setFrameOrigin(NSPoint(x: x, y: y))
         p.makeKeyAndOrderFront(nil)
         shown = true
+        cancelIdleExit()
         trace("panel shown frame=\(NSStringFromRect(p.frame)) "
               + "level=\(p.level.rawValue) key=\(p.isKeyWindow)")
         writeState(frame: p.frame, screen: full, visible: vis, count: entries ?? 0)
@@ -265,21 +290,30 @@ final class Delegate: NSObject, NSApplicationDelegate {
         NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             guard let self, let p = self.panel else { return }
             // 全局监视器按理收不到自己窗口的事件；万一路径异常收到，
-            // 也要保证面板内部的点击不会被当成「点外面」而误退出。
+            // 也要保证面板内部的点击不会被当成「点外面」而误收起。
             if p.frame.contains(NSEvent.mouseLocation) {
                 trace("global monitor fired INSIDE panel frame -> ignored")
                 return
             }
+            // 点在 Dock 区域时也不处理：那一下应该交给 Dock 发 reopen，
+            // 由 applicationShouldHandleReopen 统一做「展开/收起」切换。
+            // 否则这里先收起、reopen 又展开，第二次点击看上去毫无反应。
+            let m = NSEvent.mouseLocation
+            if let vis = NSScreen.screens.first(where: { NSMouseInRect(m, $0.frame, false) })?.visibleFrame,
+               !NSMouseInRect(m, vis, false) {
+                trace("global monitor: click in Dock/menu-bar strip -> ignored")
+                return
+            }
             trace("dismiss: click outside panel")
-            self.finish()
+            self.hidePanel()
         }
         NotificationCenter.default.addObserver(
             forName: NSWindow.didResignKeyNotification,
             object: panel, queue: .main
         ) { [weak self] _ in
-            guard let self, self.shown, !self.finished else { return }
+            guard let self, self.shown else { return }
             trace("dismiss: panel resigned key")
-            self.finish()
+            self.hidePanel()
         }
     }
 
@@ -289,32 +323,52 @@ final class Delegate: NSObject, NSApplicationDelegate {
         trace("pick index=\(index) entries=\(entries.count)")
         guard index >= 0, index < entries.count else {
             trace("pick out of range, abort")
-            finish()
+            hidePanel()
             return
         }
         let url = URL(fileURLWithPath: entries[index].path)
         guard FileManager.default.fileExists(atPath: url.path) else {
             trace("target missing: \(url.path)")
-            finish()
+            hidePanel()
             return
         }
 
         trace("launching \(url.path)")
+        hidePanel()          // 面板立刻收起，不等回调
         let cfg = NSWorkspace.OpenConfiguration()
         cfg.activates = true
         NSWorkspace.shared.openApplication(at: url, configuration: cfg) { app, err in
             trace("openApplication result app=\(app?.localizedName ?? "nil") "
                   + "pid=\(app?.processIdentifier ?? -1) "
                   + "err=\(err?.localizedDescription ?? "nil")")
-            DispatchQueue.main.async { self.finish() }
         }
-        // 兜底：万一回调不来，也不能把面板留在屏幕上
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { self.finish() }
     }
 
-    private func finish() {
-        guard !finished else { return }
-        finished = true
+    // ── 收起面板（进程留着，等空闲超时再退）
+    func hidePanel() {
+        guard let p = panel else { return }
+        shown = false
+        p.orderOut(nil)
+        trace("panel hidden")
+        scheduleIdleExit()
+    }
+
+    private func scheduleIdleExit() {
+        idleTimer?.invalidate()
+        idleTimer = Timer.scheduledTimer(withTimeInterval: kIdleSeconds, repeats: false) { [weak self] _ in
+            self?.quit()
+        }
+    }
+
+    private func cancelIdleExit() {
+        idleTimer?.invalidate()
+        idleTimer = nil
+    }
+
+    private func quit() {
+        guard !leaving else { return }
+        leaving = true
+        cancelIdleExit()
         trace("=== exit")
         NSApp.terminate(nil)
     }

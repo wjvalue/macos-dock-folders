@@ -549,29 +549,38 @@ def build_launcher_app(g, style=DEFAULT_STYLE, force=False):
             str(src), "-framework", "Cocoa"], check=True)
         sh(["chmod", "+x", str(exe)])
 
-    png_to_icns(mosaic, icon)
-    with info.open("wb") as f:
-        plistlib.dump({
-            "CFBundleExecutable": "DockGroupLauncher",
-            "CFBundleIdentifier": (BUNDLE_PREFIX + "."
-                                   + hashlib.md5(name.encode()).hexdigest()[:10]),
-            "CFBundleName": name,
-            "CFBundleDisplayName": name,
-            "CFBundleIconFile": "AppIcon",
-            "CFBundlePackageType": "APPL",
-            "CFBundleShortVersionString": "1.0",
-            "CFBundleVersion": "1",
-            "LSMinimumSystemVersion": "12.0",
-            "LSUIElement": True,
-            "NSHighResolutionCapable": True,
-            "DockGroupFolder": str(folder),
-            "DockGroupName": name,
-            "DockGroupLogDir": str(CACHE),
-        }, f)
+    plist = {
+        "CFBundleExecutable": "DockGroupLauncher",
+        "CFBundleIdentifier": (BUNDLE_PREFIX + "."
+                               + hashlib.md5(name.encode()).hexdigest()[:10]),
+        "CFBundleName": name,
+        "CFBundleDisplayName": name,
+        "CFBundleIconFile": "AppIcon",
+        "CFBundlePackageType": "APPL",
+        "CFBundleShortVersionString": "1.0",
+        "CFBundleVersion": "1",
+        "LSMinimumSystemVersion": "12.0",
+        "LSUIElement": True,
+        "NSHighResolutionCapable": True,
+        "DockGroupFolder": str(folder),
+        "DockGroupName": name,
+        "DockGroupLogDir": str(CACHE),
+    }
 
-    sh(["codesign", "--force", "--sign", "-", str(app)])
-    if Path(LSREGISTER).exists():
-        sh([LSREGISTER, "-f", str(app)])
+    # 图标 / Info.plist / 签名只在内容真的变了才重写。
+    # 每次重建都会改动 bundle 内容，LaunchServices 会因此作废该 App 的记录，
+    # 之后再点就报「应用程序"X"已不能再打开」。内容没变就一个字节都别动。
+    stamp = CACHE / f"{name}.bundle-stamp"
+    digest = hashlib.sha256(
+        plistlib.dumps(plist) + mosaic.read_bytes()).hexdigest()
+    if force or not stamp.exists() or stamp.read_text().strip() != digest:
+        png_to_icns(mosaic, icon)
+        with info.open("wb") as f:
+            plistlib.dump(plist, f)
+        sh(["codesign", "--force", "--sign", "-", str(app)])
+        stamp.write_text(digest)
+        if Path(LSREGISTER).exists():
+            sh([LSREGISTER, "-f", str(app)])
     return app, ok, missing
 
 

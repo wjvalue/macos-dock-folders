@@ -392,3 +392,103 @@ ImageStat.Stat(ImageChops.difference(old_img, new_img)).extrema   # 全为 0 才
 ```
 
 5 种风格全部 0/255。这一步正是靠它抓出了上面的渐变回归。
+
+---
+
+## 12. 「应用程序"X"已不能再打开」
+
+用户报的症状：**点一下正常，再点一次弹这个错**。
+
+有两个独立成因，都要修。
+
+### 成因 A：每次 rebuild 都重写 bundle，LaunchServices 作废了 App 记录
+
+`build_launcher_app` 原来无条件做这三件事：
+
+```python
+png_to_icns(mosaic, icon)          # 重写 AppIcon.icns
+plistlib.dump(plist, info_file)    # 重写 Info.plist
+codesign --force --sign - <app>    # 重写 _CodeSignature
+```
+
+哪怕图标和配置**一个字节都没变**，bundle 的内容也被改了。LaunchServices 会认为
+这个 App 被替换过，作废先前登记的记录，之后再打开就报「已不能再打开」。
+`lsregister -f` 也不总能救回来。
+
+**修法：内容没变就一个字节都别动。**
+
+```python
+digest = hashlib.sha256(plistlib.dumps(plist) + mosaic.read_bytes()).hexdigest()
+stamp = CACHE / f"{name}.bundle-stamp"
+if force or not stamp.exists() or stamp.read_text().strip() != digest:
+    # 只有这时才写 icns / Info.plist / codesign / lsregister
+    ...
+    stamp.write_text(digest)
+```
+
+验证方式：连续 `apply` 两次，看 `AppIcon.icns` 的 mtime 是否变 —— 第二次应该不动。
+
+### 成因 B：用完立刻退出，连点时 Dock 会尝试再启动一个实例
+
+启动器原来的收尾是 `NSApp.terminate(nil)`。于是：
+
+1. 第一次点击 → 启动实例 → 弹面板 → 你选完 / 点别处 → 进程**退出**
+2. 第二次点击 → 上一个实例可能还没退干净 → Dock 尝试**再启动一个实例** →
+   LaunchServices 拒绝 → 弹「已不能再打开」
+
+**注意这个用 `open` 命令复现不出来**：`open` 对已运行的 App 走的是 reopen 路径，
+返回码 0，一切正常。Dock 点图标与 `open` 不是同一条路，这也是排查时最容易走偏的地方。
+
+**修法：不要用完就退。** 收起面板后让进程留着，下次点击走 reopen：
+
+```swift
+private func hidePanel() {
+    shown = false
+    panel?.orderOut(nil)
+    scheduleIdleExit()          // kIdleSeconds（默认 600s）后自动退出
+}
+```
+
+于是点击变成**切换**语义 —— 面板开着再点一下就是收起，符合直觉：
+
+```swift
+func applicationShouldHandleReopen(_ app: NSApplication, hasVisibleWindows: Bool) -> Bool {
+    if panel?.isVisible == true { hidePanel() } else { showPanel(...) }
+    return true
+}
+```
+
+验证（事件日志）：
+
+```
+[..] === launch pid=39592 group=AI
+[..] panel shown frame={{680, 499}, {380, 122}} level=101 key=true
+[..] reopen -> toggle close
+[..] panel hidden                       ← 同一 pid，进程没退
+[..] reopen -> toggle open
+[..] panel shown frame={{584, 502}, {380, 122}} level=101 key=true
+```
+
+### 配套：全局监视器要让开 Dock 区域
+
+改成常驻后有个新坑：点击 Dock 图标时，**全局鼠标监视器也会收到那一下**。
+它按「点面板外」处理就会先收起面板，紧接着 reopen 又来展开 —— 净效果是第二次点击
+看上去毫无反应。所以监视器要跳过 Dock/菜单栏那条带：
+
+```swift
+if let vis = NSScreen.screens.first(where: { NSMouseInRect(m, $0.frame, false) })?.visibleFrame,
+   !NSMouseInRect(m, vis, false) {
+    return   // 落在 Dock 或菜单栏区域，交给 reopen 决定
+}
+```
+
+### 附带清掉的一个隐患
+
+早期版本装过的 LaunchAgent（`com.wangjian.dockgroup.plist`）指向**旧脚本路径**。
+如果它被加载着，每次分组文件夹变动都会用旧脚本 + 旧 Swift 源码覆盖新 bundle ——
+既让「点图标没反应」的修复失效，也会持续触发成因 A。
+升级或迁移目录后，务必检查并清掉这类陈旧的 plist：
+
+```bash
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/<旧label>.plist
+```
