@@ -304,6 +304,13 @@ if p.frame.contains(NSEvent.mouseLocation) {
 事件轨迹存 `<组名>.events.log`（追加式），两者分开，互不干扰。
 
 
+### 已实测确认（2026-09-15）
+
+用户实测：**点击面板里的图标已能正常启动对应 App**。
+关键是三处一起改：自绘 `NSView` + 显式 `acceptsFirstMouse` 返回 true、
+`wantsLayer` 移出 `mouseEntered`、全局监视器加面板命中判断。
+
+
 ---
 
 ## 11. 性能：钱花在哪，以及三个反直觉的发现
@@ -492,6 +499,16 @@ if let vis = NSScreen.screens.first(where: { NSMouseInRect(m, $0.frame, false) }
 ```bash
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/<旧label>.plist
 ```
+
+### 已实测确认（2026-09-15）
+
+用户在本机实测：**连点分组图标不再报错，展开 / 收起均正常**。
+有效性来自三条修复同时生效，缺任何一条都不行：
+
+1. bundle 内容未变时不再重写 —— 否则 LaunchServices 会持续作废 App 记录
+2. 启动器常驻、第二次点击走 reopen —— 否则会尝试新启实例被拒
+3. 全局鼠标监视器跳过 Dock / 菜单栏区域 —— 否则会与 reopen 打架，表现为「第二次点击没反应」
+
 
 ---
 
