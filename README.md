@@ -31,6 +31,8 @@ iPhone 早就用文件夹解决了，但 macOS **从来没把这个交互搬过�
 - **图标是实时合成的** —— 读取组内每个 App 的原始图标，拼成 2×2 拼贴图；App 换图标后重跑一次就同步
 - **可以放在左侧 App 区** —— 位置就在被折叠 App 原来待的地方，不是被甩到最右边
 - **分组文件夹是唯一事实来源** —— 往文件夹里拖 App 就等于加进分组，不需要改配置
+- **一条命令增删 App** —— `dg add AI chrome` 就完事：自动建别名、重建图标、刷新 Dock。`dg del AI chrome` 同理，而且只删别名、**绝不碰你的真实 App**
+- **装一次短命令** —— 之后全用 `dg xxx`，不用再敲长路径和 `python3`
 - **7 种图标风格** —— 默认 `graphite`（深灰底，白底 App 图标在上面最清楚），另有 `dock` / `dock-deep` / `paper` / `frost-light` / `frost-blue` / `glass-dark`
 - **一键回滚** —— 每次改 Dock 前自动备份 plist，`restore` 秒回原样
 
@@ -76,9 +78,17 @@ cd macos-dock-folders
 若缺 CLT：`xcode-select --install`。
 
 ```bash
-# 建议加个别名
-alias dg='/usr/bin/python3 "'"$PWD"'/scripts/dockgroup.py"'
+# 装一个短命令 dg（自动把当前路径写进去，之后直接敲 dg 就行）
+mkdir -p ~/.local/bin
+printf '#!/bin/bash\nexec /usr/bin/python3 "%s/scripts/dockgroup.py" "$@"\n' "$PWD" > ~/.local/bin/dg
+chmod +x ~/.local/bin/dg
+
+# 确认 ~/.local/bin 在 PATH 里（zsh 用户写进 ~/.zshrc）
+export PATH="$HOME/.local/bin:$PATH"
 ```
+
+> 脚本里写死 `/usr/bin/python3` 是有意的：**系统自带的 Python 才带 Pillow**，
+> 用 `env python3` 可能解析到不带 Pillow 的解释器。
 
 ## 快速开始
 
@@ -100,42 +110,61 @@ $ dg apply AI
 ## 用法
 
 ```
-dg doctor                体检：检查依赖是否齐全
-dg init [--force]        扫描当前 Dock，生成起始 groups.json
-dg new 组名 "App" ...     新建分组
-dg preview [组名...]     预览拼贴图标，不改动 Dock
-dg apply   [组名...]     生成并写入 Dock（不填 = 全部启用的分组）
+dg                     不带参数 = 帮助 + 当前分组状态
+dg add  组名 "App" ...  往分组里加 App（自动刷新图标并重启 Dock）
+dg del  组名 "App" ...  从分组里删 App（自动刷新）
+dg new  组名 "App" ...  新建分组
+dg apply [组名...]      生成并写入 Dock（不填 = 全部启用中的分组）
 dg apply --keep-originals    保留左侧原图标，不自动摘除重复项
-dg rebuild               按文件夹现状刷新图标并重启 Dock
-dg list                  查看配置 + 文件夹现状 + Dock 挂载状态
-dg open    组名          在 Finder 里打开分组文件夹（往里面拖 App）
-dg test    组名          手动启动一次，验证点击展开效果
-dg logs    组名          查看运行日志（面板几何 + 点击事件轨迹）
-dg remove  组名...       从 Dock 移除（保留文件夹）
-dg clean   组名...       从 Dock 移除并删除文件夹
-dg watch-install         安装自动监听：文件夹一变就自动刷新图标
-dg watch-uninstall       卸载自动监听
-dg restore               用最近一次备份恢复 Dock
+dg list                查看配置 + 文件夹现状 + Dock 挂载状态
+dg preview [组名...]   预览拼贴图标，不改动 Dock
+dg rebuild             全部重新生成图标并重启 Dock
+dg open    组名        在 Finder 里打开分组文件夹（往里面拖 App）
+dg test    组名        手动启动一次，验证点击展开效果
+dg logs    组名        查看运行日志（面板几何 + 点击事件轨迹）
+dg remove  组名...     从 Dock 移除（保留文件夹）
+dg clean   组名...     从 Dock 移除并删除文件夹
+dg doctor              体检：检查依赖是否齐全
+dg init [--force]      扫描当前 Dock，生成起始 groups.json
+dg watch-install       安装自动监听：文件夹一变就自动刷新图标
+dg watch-uninstall     卸载自动监听
+dg restore             用最近一次备份恢复 Dock
+dg --help              完整说明
 ```
+
+`add` / `del` 的 App 名支持**模糊匹配**，也会去 LaunchServices 里找 —— 所以
+`dg add AI chro` 就能加上 Google Chrome，`dg add AI 备忘录` 也行。
 
 ## 日常维护
 
-**分组文件夹是唯一事实来源。** 启动器在运行时现读该文件夹，所以加了 App 立刻就能点；只有拼贴图标需要刷新。
+**分组文件夹是唯一事实来源。** 启动器在运行时现读该文件夹，所以加了 App 立刻就能点；拼贴图标则由 `add` / `del` 自动刷新。
 
 ```bash
-dg open AI
+dg add AI "备忘录"     # 加一个，自动刷新图标并重启 Dock
+dg del AI "备忘录"     # 删一个，同样自动刷新
+dg add AI chro        # App 名支持模糊匹配
+```
+
+也可以直接操作文件夹（两种方式等价）：
+
+```bash
+dg open AI            # 在 Finder 里打开分组文件夹
 ```
 
 | 想做什么 | 怎么做 |
 |---|---|
-| 加 App | 按住 **⌘ ⌥** 从「应用程序」拖进文件夹 = 建别名 |
-| 删 App | 删掉文件夹里对应的别名 |
-| 改名 / 排序 | 重命名别名（网格和 Dock 都按名称排序） |
-| 刷新图标 | `dg rebuild` |
+| 加 App | `dg add 组名 App名` |
+| 删 App | `dg del 组名 App名` |
+| 改名 / 排序 | 重命名文件夹里的别名（网格和 Dock 都按名称排序） |
+| 刷新图标 | `add` / `del` 已自动完成；要整体重刷用 `dg rebuild` |
 
-> ⚠️ **千万别不按修饰键直接拖** —— 那是「移动」，会真的把 App 搬出 `/Applications`。
+> **`dg del` 只删别名，不碰你的真实 App。** 如果文件夹里放的确实是 App 本体
+> （而不是别名），它会识别出来并拒绝删除、提示你手动处理。
 
-装了 `watch-install` 的话，连 `rebuild` 都不用跑。
+手动往文件夹里拖 App 也可以，但**必须按住 ⌘ ⌥** —— 那才是建别名；
+不按修饰键是「移动」，会真的把 App 搬出 `/Applications`。用 `dg add` 没有这个风险。
+
+装了 `watch-install` 的话，直接在文件夹里增删也会自动刷新。
 
 ## 配置 `groups.json`
 

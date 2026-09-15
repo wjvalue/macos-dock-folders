@@ -29,23 +29,31 @@ Dock 只支持把「文件夹」放进去，而且**文件夹的点击弹出网�
 
 用法
 ----
-    doctor                体检：检查依赖是否齐全
-    init [--force]        扫描当前 Dock，生成 starter groups.json
-    new 组名 "App" ...     新建分组（App 名支持模糊匹配）
-    preview [组名...]     预览拼贴图标，不改动 Dock
-    apply   [组名...]     生成并写入 Dock（不填 = 全部启用中的分组）
-                          --keep-originals 保留左侧原图标，不自动摘除
-    rebuild [--quiet]     按文件夹现状刷新别名与图标，并重启 Dock
+日常最常用的四条 —— 都会自动刷新图标并重启 Dock，不需要再跑别的命令：
+
+    add     组名 "App" ...   往分组里加 App（App 名支持模糊匹配）
+    del     组名 "App" ...   从分组里删 App（同样支持模糊匹配）
+    new     组名 "App" ...   新建分组
+    apply   [组名...]        写进 Dock（不填 = 全部启用中的分组）
+
+其余：
+
+    dg                    不带参数 = 显示帮助 + 当前分组状态
     list                  查看配置与 Dock 当前状态
-    open    组名          在 Finder 里打开分组文件夹（往里面拖 App）
+    preview [组名...]     预览拼贴图标，不改动 Dock
+    rebuild [--quiet]     全部重新生成图标并重启 Dock
+    open    组名          在 Finder 里打开分组文件夹（拖 App 进去）
     test    组名          手动启动一次启动器，验证点击展开效果
-    logs    组名          查看该分组的运行日志（面板几何 + 点击事件轨迹）
-    logs    组名          查看该分组的运行日志（面板几何 + 点击事件轨迹）
+    logs    组名          查看运行日志（面板几何 + 点击事件轨迹）
     remove  组名...       从 Dock 移除（保留文件夹）
     clean   组名...       从 Dock 移除并删除文件夹
+    doctor                体检：检查依赖是否齐全
+    init [--force]        扫描当前 Dock，生成 starter groups.json
     watch-install         安装自动监听（文件夹一变就自动刷新图标）
     watch-uninstall       卸载自动监听
     restore [备份]        从最近一次备份恢复 Dock
+
+apply 可选：--keep-originals 保留左侧原图标，不自动摘除。
 
 环境变量
 --------
@@ -557,7 +565,7 @@ def make_app_tile(app: Path, label: str) -> dict:
 
 
 def build_launcher_app(g, style=DEFAULT_STYLE, force=False,
-                       material=DEFAULT_MATERIAL):
+                       material=DEFAULT_MATERIAL, seed=None):
     """构建启动器 App：拼贴图标 + Swift 二进制 + Info.plist。
 
     返回 (app 路径, 有效 App 列表, 缺失列表)。内容运行时从分组文件夹现读，
@@ -565,7 +573,7 @@ def build_launcher_app(g, style=DEFAULT_STYLE, force=False,
     """
     name = g["name"]
     folder = BASE / name
-    _, mosaic, ok, missing = build_group(g, style=style)
+    _, mosaic, ok, missing = build_group(g, style=style, seed=seed)
 
     src = SCRIPT_DIR / "launcher/main.swift"
     app = APPS / f"{name}.app"
@@ -661,15 +669,27 @@ def read_folder_apps(folder: Path):
     return out
 
 
+def _folder_entries(folder: Path):
+    """分组文件夹里除「图标载体」外的所有条目。"""
+    if not folder.is_dir():
+        return []
+    return [p for p in folder.iterdir()
+            if p.name != ICON_ENTRY and not p.name.startswith(".")]
+
+
 def collect_apps(g, folder: Path, seed=True):
-    """文件夹优先，为空时回落到配置里的 apps 列表。"""
+    """文件夹优先；仅在**文件夹为空**时从配置播种一次，之后文件夹即唯一事实来源。
+
+    为什么不是「缺哪个就补哪个」：那样用户手动删掉的别名（或在 Finder 里删的），
+    会在下次 rebuild 时被配置里的旧列表重新播种回来 —— 表现为「删了又自己出现」。
+    这与「文件夹是唯一事实来源」的承诺直接冲突。
+    """
     if seed:
         folder.mkdir(parents=True, exist_ok=True)
-        # 别名已存在就跳过，全都存在时连 osascript 都不起
-        todo = [Path(a).expanduser() for a in g.get("apps", [])
-                if not (folder / Path(a).expanduser().stem).exists()]
-        if todo:
-            jxa("mkalias", folder, *todo)
+        if not _folder_entries(folder):
+            todo = [Path(a).expanduser() for a in g.get("apps", [])]
+            if todo:
+                jxa("mkalias", folder, *todo)
     apps = read_folder_apps(folder)
     if apps:
         return apps
@@ -677,11 +697,23 @@ def collect_apps(g, folder: Path, seed=True):
             for a in g.get("apps", []) if Path(a).expanduser().exists()]
 
 
-def build_group(g, icons_only=False, style=DEFAULT_STYLE):
-    """返回 (folder, mosaic_png, 有效清单, 异常清单)。"""
+def build_group(g, icons_only=False, style=DEFAULT_STYLE, seed=None):
+    """返回 (folder, mosaic_png, 有效清单, 异常清单)。
+
+    seed 控制「成员从哪来」：
+      None（默认）→ 按 not icons_only 决定，兼容原有行为
+      True        → 允许从配置播种（只在文件夹为空时真的播）
+      False       → **只刷新，绝不改变成员** —— refresh_groups 走这条
+
+    为什么必须区分：`dg del` 删掉别名后会触发刷新，如果刷新时允许播种，
+    而文件夹恰好只剩图标载体（被判定为「空」），配置里的旧列表就会把成员
+    重新补回来 —— 表现出来就是「删掉的 App 自己又回来了」。
+    """
     name = g["name"]
     folder = BASE / name
-    apps = collect_apps(g, folder, seed=not icons_only)
+    if seed is None:
+        seed = not icons_only
+    apps = collect_apps(g, folder, seed=seed)
     if not apps:
         raise SystemExit(f"分组「{name}」里没有任何 App")
 
@@ -876,8 +908,34 @@ def dock_app_list():
     return out
 
 
+def _mdfind_app(needle: str):
+    """用 Spotlight 按「显示名」找 App —— 这是匹配中文名的唯一可靠路子。
+
+    实测 `NSWorkspace.fullPathForApplication`（下面 resolve_app 用的 findapp）
+    **只认英文名**：「System Settings」能命中，「系统设置」返回空。
+    中文用户输入中文名是常态，所以必须补这条。
+    """
+    safe = needle.replace("'", "").replace('"', "").strip()
+    if not safe:
+        return None
+    dirs = []
+    for d in APP_DIRS + (str(HOME / "Applications"),):
+        dirs += ["-onlyin", d]
+    # 先精确、再包含。Spotlight 未建索引时 mdfind 会返回非 0，直接当没找到。
+    for q in (f"kMDItemDisplayName == '{safe}'",
+              f"kMDItemDisplayName == '*{safe}*'"):
+        r = sh(["mdfind"] + dirs + [q])
+        if r.returncode != 0:
+            continue
+        for line in r.stdout.splitlines():
+            p = Path(line)
+            if p.suffix == ".app" and p.exists():
+                return p
+    return None
+
+
 def resolve_app(spec: str):
-    """把 'Google Chrome' / 'chrome' / 'Safari' / 完整路径 解析成 App 路径。"""
+    """把 'Google Chrome' / 'chrome' / 'Safari' / '系统设置' / 完整路径 解析成 App 路径。"""
     p = Path(spec).expanduser()
     if p.exists():
         return p
@@ -901,7 +959,12 @@ def resolve_app(spec: str):
     if found and Path(found).exists():
         return Path(found)
 
-    # ③ 最后退化成模糊匹配
+    # ③ Spotlight 按显示名找 —— ② 只认英文名，中文名（「系统设置」）只有这里能命中
+    hit = _mdfind_app(stem)
+    if hit:
+        return hit
+
+    # ④ 最后退化成文件名模糊匹配
     for d in dirs:
         try:
             for e in sorted(Path(d).iterdir()):
@@ -1067,28 +1130,154 @@ def cmd_rebuild(cfg, args):
     guard = CACHE / ".last-build"
     if quiet and guard.exists() and time.time() - guard.stat().st_mtime < 4:
         return   # 防监听自触发死循环
-    touched = []
+    touched = refresh_groups(cfg, quiet=quiet)
+    if not quiet:
+        print(f"已刷新：{', '.join(touched) if touched else '无'}（Dock 已重启）")
+
+
+def refresh_groups(cfg, names=None, quiet=False):
+    """重建指定分组的图标与启动器，然后重启 Dock。names=None = 全部。
+
+    add / del / rebuild 都走这里，保证「改完即生效」。
+    """
     style = cfg.get("style", DEFAULT_STYLE)
+    material = cfg.get("material", DEFAULT_MATERIAL)
+    touched, skipped = [], []
     for g in cfg["groups"]:
+        if names and g["name"] not in names:
+            continue
         if not (BASE / g["name"]).is_dir():
             continue
         try:
+            # seed=False：刷新只改图标，绝不改变成员 —— 否则刚删掉的会被配置播种回来
             if g.get("placement", "left") == "right":
-                build_group(g, style=style)
+                build_group(g, style=style, seed=False)
             else:
-                build_launcher_app(g, style=style,
-                                   material=cfg.get("material", DEFAULT_MATERIAL))
+                build_launcher_app(g, style=style, material=material, seed=False)
             touched.append(g["name"])
         except SystemExit as e:
-            if not quiet:
-                print(f"  跳过 {g['name']}：{e}")
-    CACHE.mkdir(parents=True, exist_ok=True)
-    guard.write_text(str(time.time()))
+            skipped.append(str(e))
     if touched:
+        CACHE.mkdir(parents=True, exist_ok=True)
+        (CACHE / ".last-build").write_text(str(time.time()))
         sh(["killall", "Dock"])
         sh(["killall", "Finder"])
     if not quiet:
-        print(f"已刷新：{', '.join(touched) if touched else '无'}（Dock 已重启）")
+        for s in skipped:
+            print(f"  跳过：{s}")
+    return touched
+
+
+def cmd_add(cfg, args):
+    """往已有分组里加 App：建别名 → 同步配置 → 刷新图标 → 重启 Dock。"""
+    args = [a for a in args if not a.startswith("--")]
+    if len(args) < 2:
+        sys.exit('用法：add <组名> "App 名或路径" ["更多 App"...]')
+    gname, specs = args[0], args[1:]
+    g = find_group(cfg, gname)
+    if not g:
+        sys.exit(f"没有分组「{gname}」。新建一个：dg new {gname} "
+                 + " ".join(f'"{s}"' for s in specs))
+
+    folder = BASE / gname
+    folder.mkdir(parents=True, exist_ok=True)
+
+    todo, dup, bad = [], [], []
+    for s in specs:
+        p = resolve_app(s)
+        if p is None:
+            bad.append(s)
+        elif (folder / p.stem).exists():
+            dup.append(p.stem)
+        elif p not in todo:
+            todo.append(p)
+
+    if bad:
+        print(f"  ⚠ 找不到：{'、'.join(bad)}")
+    if dup:
+        print(f"  · 已在分组里，跳过：{'、'.join(dup)}")
+    if not todo:
+        sys.exit("没有新增任何 App")
+
+    jxa("mkalias", folder, *todo)
+    for p in todo:
+        print(f"  + {p.stem}")
+
+    # 配置里的 apps 列表同步，保证 groups.json 与文件夹一致
+    apps = g.setdefault("apps", [])
+    known = {str(Path(a).expanduser()) for a in apps}
+    for p in todo:
+        if str(p) not in known:
+            apps.append(str(p))
+    save_config(cfg)
+
+    refresh_groups(cfg, {gname}, quiet=True)
+    total = len(read_folder_apps(folder))
+    print(f"\n「{gname}」现在有 {total} 个 App，图标已刷新。")
+    if not dock_has(gname):
+        print(f"它还没在 Dock 里 —— 跑 `dg apply {gname}` 加进去。")
+
+
+def cmd_del(cfg, args):
+    """从分组里移除 App：删别名 → 同步配置 → 刷新图标 → 重启 Dock。
+
+    只删别名文件；条目若是真实 App（目录）则拒绝删除并提示，
+    避免误删用户真正的应用程序。
+    """
+    args = [a for a in args if not a.startswith("--")]
+    if len(args) < 2:
+        sys.exit('用法：del <组名> "App 名" ["更多 App"...]')
+    gname, needles = args[0], args[1:]
+    g = find_group(cfg, gname)
+    if not g:
+        sys.exit(f"没有分组「{gname}」")
+    folder = BASE / gname
+    if not folder.is_dir():
+        sys.exit(f"分组文件夹不存在：{folder}")
+
+    entries = _folder_entries(folder)
+    target_of = {n: t for n, t, _ in read_folder_apps(folder)}
+    removed, missed, danger = [], [], []
+    for n in needles:
+        low = n.lower()
+        hits = [p for p in entries if low in p.stem.lower()]
+        if not hits:
+            # 再按 App 名解析一次 —— 覆盖中文输入（「系统设置」→ System Settings 别名）
+            want = resolve_app(n)
+            if want:
+                hits = [p for p in entries if target_of.get(p.name) == want]
+        if not hits:
+            missed.append(n)
+            continue
+        for p in hits:
+            if p in removed or p in danger:
+                continue
+            if p.is_dir():
+                danger.append(p.name)      # 真实 App（目录），不能删
+                continue
+            p.unlink()                     # 别名是文件，安全
+            removed.append(p)
+
+    if missed:
+        print(f"  ⚠ 分组里没有匹配：{'、'.join(missed)}")
+    if danger:
+        print(f"  ⛔ 这些是真实 App 而非别名，已跳过（要删请手动处理）：{'、'.join(danger)}")
+    if not removed:
+        sys.exit("没有移除任何 App")
+
+    for p in removed:
+        print(f"  - {p.stem}")
+
+    gone = {p.stem.lower() for p in removed}
+    g["apps"] = [a for a in g.get("apps", [])
+                 if Path(a).expanduser().stem.lower() not in gone]
+    save_config(cfg)
+
+    refresh_groups(cfg, {gname}, quiet=True)
+    left = len(read_folder_apps(folder))
+    print(f"\n「{gname}」现在有 {left} 个 App，图标已刷新。")
+    if left == 0:
+        print(f"分组已空。加点东西进去（dg open {gname}），或用 dg remove {gname} 摘掉它。")
 
 
 def cmd_open(cfg, args):
@@ -1216,25 +1405,63 @@ def cmd_restore(cfg, args):
     print(f"已从 {src} 恢复 Dock")
 
 
+QUICK_HELP = """dg — macOS Dock 分组管理
+
+日常四条（都会自动刷新图标并重启 Dock）：
+  dg add  组名 App...   往分组里加 App（App 名支持模糊匹配）
+  dg del  组名 App...   从分组里删 App
+  dg new  组名 App...   新建分组
+  dg apply [组名...]    写进 Dock（不填 = 全部启用中的分组）
+
+其它：
+  dg list               分组与 Dock 状态
+  dg open 组名          在 Finder 里打开分组文件夹
+  dg logs 组名          查看运行日志
+  dg remove 组名        从 Dock 移除（保留文件夹）
+  dg clean  组名        从 Dock 移除并删掉文件夹
+  dg rebuild            全部重新生成图标
+  dg doctor             依赖体检
+  dg restore            出错了回滚 Dock
+  dg --help             完整说明
+"""
+
+
+def print_quick_help():
+    print(QUICK_HELP)
+    groups = load_config().get("groups", [])
+    if not groups:
+        print('当前还没有分组。建一个试试：dg new 工作 "Safari" "备忘录"')
+        return
+    print("当前分组：")
+    for g in groups:
+        n = len(read_folder_apps(BASE / g["name"]))
+        where = "已在 Dock" if dock_has(g["name"]) else "不在 Dock"
+        print(f"  {g['name']:<12} {n} 个 App   {where}")
+
+
 def main():
     argv = sys.argv[1:]
     if not argv:
-        print(__doc__)
+        print_quick_help()
         return
     if argv[0] in ("-v", "--version", "version"):
         print(f"dockgroup {__version__}")
         return
+    if argv[0] in ("-h", "--help", "help"):
+        print(__doc__)
+        return
     cmd, args = argv[0], argv[1:]
     table = {
         "doctor": cmd_doctor, "init": cmd_init, "new": cmd_new,
+        "add": cmd_add, "del": cmd_del, "rm": cmd_del,
         "list": cmd_list, "preview": cmd_preview, "apply": cmd_apply,
-        "rebuild": cmd_rebuild, "open": cmd_open, "test": cmd_test, "logs": cmd_logs, "logs": cmd_logs,
-        "remove": cmd_remove, "clean": cmd_clean,
+        "rebuild": cmd_rebuild, "open": cmd_open, "test": cmd_test,
+        "logs": cmd_logs, "remove": cmd_remove, "clean": cmd_clean,
         "watch-install": cmd_watch_install,
         "watch-uninstall": cmd_watch_uninstall, "restore": cmd_restore,
     }
     if cmd not in table:
-        sys.exit(f"未知命令：{cmd}\n\n{__doc__}")
+        sys.exit(f"未知命令：{cmd}（跑 `dg` 看可用命令）")
     table[cmd](load_config(), args)
 
 

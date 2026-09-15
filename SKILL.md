@@ -27,20 +27,37 @@ Stack 的弹窗逻辑和 tile 所在区域绑定，**没有任何 plist 字段�
 
 本仓库的 `scripts/dockgroup.py`（配置 `~/Dock Groups/groups.json`，可用 `DOCKGROUP_HOME` 覆盖）。
 
+**先装一次短命令**，之后所有操作都用 `dg`，不用再敲长路径：
+
 ```bash
-DG='/usr/bin/python3 <repo>/scripts/dockgroup.py'
-$DG doctor              # 先体检依赖
-$DG init                # 扫描当前 Dock 生成起始配置
-$DG new AI "App1" "App2"
-$DG preview [组名]      # 只合成图标预览，不动 Dock —— 改前必跑
-$DG apply   [组名]      # 生成并写入 Dock
-$DG rebuild             # 按文件夹现状刷新图标并重启 Dock
-$DG list / open / test / remove / clean / watch-install / restore
+mkdir -p ~/.local/bin
+printf '#!/bin/bash\nexec /usr/bin/python3 "%s/scripts/dockgroup.py" "$@"\n' "$PWD" > ~/.local/bin/dg
+chmod +x ~/.local/bin/dg          # 确认 ~/.local/bin 在 PATH 里
 ```
+
+```bash
+dg                      # 不带参数 = 帮助 + 当前分组状态
+dg doctor               # 先体检依赖
+dg init                 # 扫描当前 Dock 生成起始配置
+dg new  AI "App1" "App2"
+dg add  AI "App3"       # 往已有分组加 App（自动刷新图标 + 重启 Dock）
+dg del  AI "App3"       # 从分组删 App（只删别名；真实 App 会拒绝）
+dg preview [组名]       # 只合成图标预览，不动 Dock —— 改前必跑
+dg apply   [组名]       # 生成并写入 Dock
+dg rebuild              # 全部重新生成图标并重启 Dock
+dg list / open / test / logs / remove / clean / watch-install / restore
+```
+
+> **`add` / `del` 是日常唯一需要的两条。** 它们内部走完
+> 「建别名 → 同步 `groups.json` → 重建拼贴图标 → 重启 Dock」整条链。
+> 所以当用户想「往分组里加个 App」时，**别让他去开 Finder 拖拽再手动 rebuild** ——
+> 一条命令就够。App 名支持模糊匹配，`dg add AI chro` 能加上 Google Chrome。
+>
+> `del` 有安全防护：只 `unlink` 文件（别名），条目若是目录（真实 App）会跳过并提示。
 
 ## 标准流程
 
-1. **读现状**：`$DG list`，或 `defaults read com.apple.dock persistent-apps` + percent-decode。
+1. **读现状**：`dg list`，或 `defaults read com.apple.dock persistent-apps` + percent-decode。
 2. **提方案**：按用途分组（AI/浏览器/社交/办公/系统/个人）。
    **高频 App 保持平铺**，只折叠「低频但想在手边」的。清单给用户确认。
 3. **预览**：跑 `preview`，把 `~/Dock Groups/.cache/preview-all.png` 给用户看。

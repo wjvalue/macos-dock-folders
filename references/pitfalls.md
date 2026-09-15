@@ -652,3 +652,111 @@ Notes / Clash Verge / 微信，内容占比同样是 0.87、四角同样透明 �
 系统底板的圆角很大，四角本来就是透明的，会误判成「没有底板」。
 正确做法是把我们画的图按 Dock 渲染结果的 bbox 对齐后逐像素比，
 或者干脆把两边并排存成图直接看。
+
+---
+
+## 16. 「删掉的 App 自己又回来了」
+
+这个 bug 是**真实环境端到端测试**才暴露的：单元层面 `collect_apps` 看着完全正常，
+只有在「删到只剩图标载体」这个真实操作序列下才会触发。
+
+### 现象
+
+`dg del AI 计算器` 之后，被删的 App 过一会儿又出现在分组里。
+
+### 根因：把配置列表当成了「补货单」
+
+`collect_apps(g, folder, seed=True)` 原本的逻辑是「**缺哪个补哪个**」：
+
+```python
+# ✗ 旧逻辑
+todo = [Path(a) for a in g["apps"] if not (folder / Path(a).stem).exists()]
+if todo:
+    jxa("mkalias", folder, *todo)
+```
+
+只要配置的 `apps` 列表里还有这个 App，下次任何一次 `build_group`
+（`apply` / `rebuild` / `add` / `del` 都会触发）都会把它重新播种回文件夹。
+
+更隐蔽的是：`dg del` 删掉别名后会调 `refresh_groups` 刷新图标，
+如果这次删除让文件夹**只剩图标载体**（`Icon\r`），`collect_apps` 会判定
+「文件夹为空」→ 从配置播种 → **把别的成员补回来**。
+表现出来就是「我删的是 A，结果 B 冒出来了」。
+
+### 修法：区分「建组」与「刷新」
+
+```python
+def build_group(g, icons_only=False, style=DEFAULT_STYLE, seed=None):
+    """seed=None 时按 not icons_only 决定（兼容原行为）；
+       seed=False 表示「只刷新，绝不改变成员」。"""
+    if seed is None:
+        seed = not icons_only
+    apps = collect_apps(g, folder, seed=seed)
+```
+
+- `dg apply`（建组 / 首次安装）→ `seed=True`，允许播种
+- `refresh_groups`（`rebuild` / `add` / `del` 触发的刷新）→ **`seed=False`**，只改图标
+
+同时把 `collect_apps` 的播种条件从「缺哪个补哪个」收紧为「**仅在文件夹为空时播种一次**」：
+
+```python
+# ✓ 新逻辑
+if not _folder_entries(folder):
+    todo = [Path(a).expanduser() for a in g.get("apps", [])]
+    if todo:
+        jxa("mkalias", folder, *todo)
+```
+
+两层保护叠加，才让「文件夹是唯一事实来源」这句承诺名副其实。
+
+### 教训
+
+**「刷新」和「同步」是两种不同语义，不能共用一个函数。**
+刷新只该重算派生数据（图标），不该写回源数据（成员）。
+两者混在一起时，任何一次刷新都可能覆盖用户的编辑。
+
+---
+
+## 17. 中文 App 名解析不到
+
+`dg add AI 系统设置` 报「找不到」，但 `dg add AI "System Settings"` 正常。
+
+实测 `NSWorkspace.fullPathForApplication`（原本唯一的兜底路径）：
+
+| 输入 | 结果 |
+|---|---|
+| `System Settings` | ✅ 命中 |
+| `系统设置` | ❌ 空 |
+| `备忘录` | ❌ 空 |
+| `chro`（模糊） | ❌ 空 |
+
+**它只认英文名** —— 不做本地化匹配，也不做模糊匹配。
+
+修法：加一个 Spotlight 兜底（`mdfind` 认显示名）：
+
+```python
+def _mdfind_app(needle):
+    safe = needle.replace("'", "").replace('"', "").strip()
+    dirs = []
+    for d in APP_DIRS + (str(HOME / "Applications"),):
+        dirs += ["-onlyin", d]
+    # 先精确、再包含；Spotlight 未建索引时 mdfind 返回非 0，直接当没找到
+    for q in (f"kMDItemDisplayName == '{safe}'",
+              f"kMDItemDisplayName == '*{safe}*'"):
+        r = sh(["mdfind"] + dirs + [q])
+        if r.returncode != 0:
+            continue
+        for line in r.stdout.splitlines():
+            p = Path(line)
+            if p.suffix == ".app" and p.exists():
+                return p
+```
+
+实测耗时 140–235ms/次（有 Spotlight 索引），可接受。
+
+> 中文用户输入中文名是常态，这条不能省。
+>
+> 同理 `dg del` 也要支持中文名 —— 它是按**别名文件名**匹配的，而文件名是英文
+> （`System Settings`）。所以要先 `resolve_app(用户输入)` 拿到真实路径，
+> 再和文件夹里每个条目解析出的目标路径比对。
+
