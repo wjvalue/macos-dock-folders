@@ -36,12 +36,19 @@ Dock 只支持把「文件夹」放进去，而且**文件夹的点击弹出网�
     new     组名 "App" ...   新建分组
     apply   [组名...]        写进 Dock（不填 = 全部启用中的分组）
 
+不想记组名、不想拼 App 名时，add / new 不带参数直接进交互引导：
+
+    add     （无参数）        列出分组 → 输关键词过滤 App → 敲数字多选 → 回车搞定
+    new     （无参数）        输组名 → 多选 App → 建完问你要不要直接写进 Dock
+    new --apply 组名 "App".. 新建分组并一步写进 Dock
+
 其余：
 
     dg                    不带参数 = 显示帮助 + 当前分组状态
     list                  查看配置与 Dock 当前状态
     preview [组名...]     预览拼贴图标，不改动 Dock
     rebuild [--quiet]     全部重新生成图标并重启 Dock
+    style [组名|--all] [材质]   换面板底色（不带参数 = 看现状 + 材质清单）
     open    组名          在 Finder 里打开分组文件夹（拖 App 进去）
     test    组名          手动启动一次启动器，验证点击展开效果
     logs    组名          查看运行日志（面板几何 + 点击事件轨迹）
@@ -67,6 +74,7 @@ import hashlib
 import json
 import os
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -139,7 +147,31 @@ STYLES = {
         cell=0.440, pad=0.085, gap=0.045, shadow=True, icon_shadow=False),
 }
 DEFAULT_STYLE = "graphite"
-DEFAULT_MATERIAL = "menu"
+# 默认面板材质。
+#
+# 为什么默认不是 menu（最像 Dock 栏的浅灰玻璃）：实测下来，很多 App 的图标
+# 本身就是「白底圆角卡片」（DSH Desktop / Hermes / 备忘录 …），放在浅色玻璃上
+# 边界直接糊进背景，图标认不出来。深色玻璃上这些白底图标反而最清楚，
+# 整体观感也更接近系统 Dock 文件夹展开的效果。想换回浅色：dg style --all menu
+DEFAULT_MATERIAL = "hud"
+
+# 面板毛玻璃材质。key 必须和启动器 main.swift 里 material(named:) 的分支一一对应，
+# 对不上会静默退回 .menu —— 加了新分支记得两边一起改。
+MATERIALS = {
+    "hud":               "深色玻璃（当前默认）。白底 App 图标在浅色底上会和背景糊在一起，用这个最清楚",
+    "menu":              "半透明灰玻璃，最接近 Dock 栏的质感",
+    "popover":           "接近纯白（系统 popover 的底色）",
+    "toolTip":           "深色提示框，比 hud 淡一点",
+    "sidebar":           "侧边栏材质",
+    "header":            "表头材质",
+    "titlebar":          "标题栏材质",
+    "underWindow":       "窗口背景之下",
+    "contentBackground": "内容背景",
+    "sheet":             "表单材质",
+    "windowBackground":  "窗口背景色",
+    "appearanceBased":   "跟随系统外观（老的 appearanceBased 行为）",
+    "fullScreenUI":      "全屏 UI 材质",
+}
 
 # 预览图字体（macOS 26 已移除 PingFang.ttc）
 FONT_CANDIDATES = [
@@ -564,6 +596,38 @@ def make_app_tile(app: Path, label: str) -> dict:
     return {"GUID": guid, "tile-data": data, "tile-type": "file-tile"}
 
 
+def launcher_binary(force=False) -> Path:
+    """编译启动器二进制 —— 所有分组共用同一份。
+
+    为什么不能靠 mtime 判断要不要重编译：`codesign --force --sign -` 会把签名
+    写进 Mach-O（__LINKEDIT），**改动可执行文件本身**，于是它的 mtime 永远比
+    main.swift 新。原来那句 `src.mtime > exe.mtime` 因此在第一次签名之后就永久
+    失效 —— 改完 main.swift 跑 rebuild 不会重编译，Dock 上点开看到的还是旧面板，
+    而 rebuild 照样打印「已刷新」。改这个文件时踩过：UI 改动"没生效"，查了半天
+    怀疑是材质和圆角，实际是二进制压根没换。所以改用 main.swift 的**内容摘要**
+    当判据，戳另存一份，跟被签名的产物彻底解耦。
+
+    另外启动器需要的全部信息（分组名、文件夹、材质、脚本路径）都写在
+    Info.plist 里，二进制本身与分组无关 —— 一份编译产物给所有分组用，
+    rebuild 少编译 N-1 次。
+    """
+    src = SCRIPT_DIR / "launcher/main.swift"
+    if not src.exists():
+        raise SystemExit(f"找不到启动器源码：{src}")
+    cached = CACHE / ".launcher.bin"
+    stamp = CACHE / ".launcher.src-stamp"
+    digest = hashlib.sha256(src.read_bytes()).hexdigest()
+    if (not force and cached.exists() and stamp.exists()
+            and stamp.read_text().strip() == digest):
+        return cached
+    CACHE.mkdir(parents=True, exist_ok=True)
+    sh(["swiftc", "-swift-version", "5", "-O", "-o", str(cached),
+        str(src), "-framework", "Cocoa"], check=True)
+    sh(["chmod", "+x", str(cached)])
+    stamp.write_text(digest)
+    return cached
+
+
 def build_launcher_app(g, style=DEFAULT_STYLE, force=False,
                        material=DEFAULT_MATERIAL, seed=None):
     """构建启动器 App：拼贴图标 + Swift 二进制 + Info.plist。
@@ -575,18 +639,13 @@ def build_launcher_app(g, style=DEFAULT_STYLE, force=False,
     folder = BASE / name
     _, mosaic, ok, missing = build_group(g, style=style, seed=seed)
 
-    src = SCRIPT_DIR / "launcher/main.swift"
+    binary = launcher_binary(force=force)
     app = APPS / f"{name}.app"
     exe = app / "Contents/MacOS/DockGroupLauncher"
     icon = app / "Contents/Resources/AppIcon.icns"
     info = app / "Contents/Info.plist"
     exe.parent.mkdir(parents=True, exist_ok=True)
     icon.parent.mkdir(parents=True, exist_ok=True)
-
-    if force or not exe.exists() or src.stat().st_mtime > exe.stat().st_mtime:
-        sh(["swiftc", "-swift-version", "5", "-O", "-o", str(exe),
-            str(src), "-framework", "Cocoa"], check=True)
-        sh(["chmod", "+x", str(exe)])
 
     plist = {
         "CFBundleExecutable": "DockGroupLauncher",
@@ -605,6 +664,19 @@ def build_launcher_app(g, style=DEFAULT_STYLE, force=False,
         "DockGroupName": name,
         "DockGroupLogDir": str(CACHE),
         "DockGroupMaterial": material,
+        # 启动器收到拖放后要回调本脚本；GUI 进程的 PATH 只有 /usr/bin:/bin，
+        # 不能指望 dg 在 PATH 里，直接把绝对路径塞进去。
+        "DockGroupScript": str(SCRIPT_DIR / "dockgroup.py"),
+        # 声明能处理 .app → 拖 App 到 Dock 图标上时 tile 会高亮成放置目标。
+        # LSHandlerRank=Alternate：不当默认处理器（双击 App 仍由系统启动），
+        # 只作为「可以接收」的候选，保证 Dock 拖放会高亮。
+        "CFBundleDocumentTypes": [{
+            "CFBundleTypeName": "Application",
+            "CFBundleTypeRole": "Viewer",
+            "LSHandlerRank": "Alternate",
+            "LSItemContentTypes": ["com.apple.application",
+                                   "com.apple.application-bundle"],
+        }],
     }
 
     # 图标 / Info.plist / 签名只在内容真的变了才重写。
@@ -614,14 +686,22 @@ def build_launcher_app(g, style=DEFAULT_STYLE, force=False,
     # 但反过来有个坑：bundle 路径和 CFBundleVersion 都不变时，
     # IconServices 会一直用旧图标缓存 —— 我们这边换了灰底，Dock 还显示旧的白底。
     # 所以让 CFBundleVersion 跟着内容摘要走：图标一变版本号就变，Dock 才会刷新。
+    #
+    # 二进制也进摘要：main.swift 一改，摘要就变，于是必然会重写 exe 并重新签名 ——
+    # 否则会出现「源码变了、戳没变」，拷贝那一步被跳过，App 里还是旧二进制。
     core = {k: v for k, v in plist.items() if k != "CFBundleVersion"}
     digest = hashlib.sha256(
-        plistlib.dumps(core) + mosaic.read_bytes()).hexdigest()
+        plistlib.dumps(core) + mosaic.read_bytes()
+        + binary.read_bytes()).hexdigest()
     plist["CFBundleVersion"] = digest[:8]
     plist["CFBundleShortVersionString"] = "1.0." + digest[:6]
 
     stamp = CACHE / f"{name}.bundle-stamp"
-    if force or not stamp.exists() or stamp.read_text().strip() != digest:
+    if (force or not exe.exists() or not stamp.exists()
+            or stamp.read_text().strip() != digest):
+        # 覆盖 exe 必须在签名之前：改了 bundle 内容不重签，macOS 会拒绝启动。
+        shutil.copyfile(binary, exe)
+        os.chmod(exe, 0o755)
         png_to_icns(mosaic, icon)
         with info.open("wb") as f:
             plistlib.dump(plist, f)
@@ -975,6 +1055,302 @@ def resolve_app(spec: str):
     return None
 
 
+# ─────────────────────────────────────────────────────────── 交互模式
+#
+# 为什么需要：日常 add/new 最烦的不是命令本身，而是「得记组名、得拼对 App 名」。
+# 不带参数跑 add / new 就进入引导：列分组、列已安装 App，敲数字多选，回车确认。
+# 纯 input() 实现，不引入任何新依赖。
+
+
+class Cancelled(Exception):
+    """用户 Ctrl-C 或主动取消。"""
+
+
+def ask(prompt, default=""):
+    """读一行输入。EOF 当默认值，Ctrl-C 抛 Cancelled。"""
+    try:
+        suffix = f" [{default}]" if default else ""
+        return input(f"{prompt}{suffix}> ").strip()
+    except EOFError:
+        print()
+        return default
+    except KeyboardInterrupt:
+        print()
+        raise Cancelled
+
+
+def confirm(prompt, default=True):
+    """yes/no。default=True 时空回车也算确认。"""
+    s = ask(prompt, "y" if default else "n").lower()
+    return s in ("y", "yes") or (default and s == "")
+
+
+def parse_selection(s: str, count: int):
+    """'1' / '1,3' / '2-4' → 0 基下标集合。非法返回 None。"""
+    picks = set()
+    for part in s.replace(" ", "").split(","):
+        if not part:
+            continue
+        m = re.match(r"^(\d+)(?:-(\d+))?$", part)
+        if not m:
+            return None
+        a, b = int(m.group(1)), int(m.group(2) or m.group(1))
+        if a < 1 or b > count or a > b:
+            return None
+        picks.update(range(a - 1, b))
+    return picks or None
+
+
+def list_installed_apps():
+    """扫描所有应用目录 → [(显示名, 路径)]，按显示名去重、按名排序。"""
+    seen, out = set(), []
+    for d in list(APP_DIRS) + [str(HOME / "Applications")]:
+        try:
+            entries = sorted(Path(d).iterdir(), key=lambda e: e.stem.lower())
+        except OSError:
+            continue
+        for e in entries:
+            if e.suffix == ".app" and e.is_dir() and e.stem not in seen:
+                seen.add(e.stem)
+                out.append((e.stem, e))
+    return out
+
+
+def pick_group(cfg, prompt="选择分组"):
+    """交互式选一个分组；只有一个时自动选中。取消返回 None。"""
+    groups = cfg["groups"]
+    if not groups:
+        print("还没有任何分组，先建一个：dg new")
+        return None
+    if len(groups) == 1:
+        print(f"\n只有一个分组「{groups[0]['name']}」，直接用它。")
+        return groups[0]
+
+    print(f"\n{prompt}：")
+    for i, g in enumerate(groups, 1):
+        print(f"  {i:3}. {g['name']:<12} {group_app_count(g)} 个 App")
+    while True:
+        s = ask("输入序号（q=取消）").lower()
+        if s in ("q", "quit", "exit"):
+            return None
+        picks = parse_selection(s, len(groups))
+        if picks is None:
+            print("  输入无效：敲序号，如 1")
+            continue
+        return groups[sorted(picks)[0]]
+
+
+def prompt_group_name(cfg):
+    """问一个不重复的分组名。取消返回 None。"""
+    while True:
+        name = ask("新分组叫什么名字（如 AI / 工作 / 工具）")
+        if not name:
+            return None
+        if find_group(cfg, name):
+            print(f"  「{name}」已存在，换一个")
+            continue
+        return name
+
+
+PAGE_SIZE = 15
+
+
+def _require_tty(cmd):
+    """交互模式必须有真实终端；管道/脚本调用时给出用法提示，避免 input() 死循环。"""
+    if not sys.stdin.isatty():
+        sys.exit(f"交互模式需要终端。在脚本里请用带参数的形式：dg {cmd} <组名> \"App\" ...")
+
+
+def group_app_count(g):
+    """分组里有几个 App：文件夹优先，没建文件夹时回退读配置。"""
+    apps = read_folder_apps(BASE / g["name"])
+    if apps:
+        return len(apps)
+    return len(g.get("apps", []))
+
+
+def pick_apps(cfg, group_name=None):
+    """交互式多选 App → [Path]。
+
+    group_name 给定时，该组里已有的 App 会被标记并禁止重复选择。
+    流程：输关键词过滤 → 翻页/敲序号多选 → q 完成。
+    """
+    installed = list_installed_apps()
+    if not installed:
+        print("  扫描不到已安装的 App")
+        return []
+    exclude = {n for n, _, _ in read_folder_apps(BASE / group_name)} \
+        if group_name else set()
+    chosen: list[Path] = []
+
+    print(f"\n共 {len(installed)} 个已安装 App。先输关键词缩小范围，再敲序号多选"
+          f"（如 1 或 1,3 或 2-4）。")
+    while True:
+        kw = ask("关键词过滤（回车=全部，q=完成选择）")
+        if kw.lower() == "q":
+            return chosen
+        cands = [(n, p) for n, p in installed
+                 if not kw or kw.lower() in n.lower()]
+        if not cands:
+            print(f"  没有匹配「{kw}」的 App，换个关键词")
+            continue
+
+        page = 0
+        while True:
+            lo = page * PAGE_SIZE
+            chunk = cands[lo:lo + PAGE_SIZE]
+            for i, (n, p) in enumerate(chunk, lo + 1):
+                tag = ""
+                if p in chosen:
+                    tag = "✓已选"
+                elif n in exclude:
+                    tag = "·已在该组"
+                print(f"  {i:3}. {n}  {tag}")
+            total = len(cands)
+            hi = min(lo + PAGE_SIZE, total)
+            nav = "，n=下一页" if hi < total else ""
+            sel = ask(f"选择（{lo + 1}-{hi}/{total}{nav}，k=重新过滤，q=完成）")
+            low = sel.lower()
+            if low == "q":
+                return chosen
+            if not sel:
+                if chosen:
+                    return chosen
+                print("  还没选任何 App。输序号选择，或敲 q 取消。")
+                continue
+            if low == "k":
+                break       # 回到关键词输入
+            if low == "n" and hi < total:
+                page += 1
+                continue
+            if low == "p" and page > 0:
+                page -= 1
+                continue
+
+            picks = parse_selection(sel, total)
+            if picks is None:
+                print("  输入无效：如 1 或 1,3 或 2-4")
+                continue
+            for i in sorted(picks):
+                n, p = cands[i]
+                if n in exclude:
+                    print(f"  · 「{n}」已在该组，跳过")
+                elif p not in chosen:
+                    chosen.append(p)
+                    print(f"  ✓ 已选 {n}（共 {len(chosen)} 个）")
+
+
+def _add_apps(cfg, g, paths):
+    """把已解析好的 App 路径加进分组：建别名 → 同步配置 → 刷新图标 → 重启 Dock。
+
+    cmd_add 与交互模式共用这条，保证两条路的行为完全一致。
+    返回实际新增的个数。
+    """
+    gname = g["name"]
+    folder = BASE / gname
+    folder.mkdir(parents=True, exist_ok=True)
+
+    todo, dup = [], []
+    for p in paths:
+        if (folder / p.stem).exists():
+            dup.append(p.stem)
+        elif p not in todo:
+            todo.append(p)
+    if dup:
+        print(f"  · 已在分组里，跳过：{'、'.join(dup)}")
+    if not todo:
+        # 没有任何新增就直接返回，不做刷新、不重启 Dock。
+        # 拖放场景下系统可能把同一个 kAEOpenDocuments 送两次（实测隔 7 秒又来一次），
+        # 第二次必须是廉价空操作，否则会白白重启一次 Dock。
+        return 0
+
+    jxa("mkalias", folder, *todo)
+    for p in todo:
+        print(f"  + {p.stem}")
+
+    # 配置里的 apps 列表同步，保证 groups.json 与文件夹一致
+    apps = g.setdefault("apps", [])
+    known = {str(Path(a).expanduser()) for a in apps}
+    for p in todo:
+        if str(p) not in known:
+            apps.append(str(p))
+    save_config(cfg)
+
+    refresh_groups(cfg, {gname}, quiet=True)
+    return len(todo)
+
+
+def interactive_add(cfg):
+    """dg add（不带参数）→ 选分组 → 多选 App → 确认 → 自动刷新。"""
+    _require_tty("add")
+    try:
+        if not cfg["groups"]:
+            print("还没有分组。先建一个：dg new")
+            return
+        g = pick_group(cfg, "把 App 加到哪个分组")
+        if g is None:
+            return
+        paths = pick_apps(cfg, g["name"])
+        if not paths:
+            print("没有选择任何 App。")
+            return
+
+        print(f"\n将把以下 App 加进「{g['name']}」：")
+        for p in paths:
+            print(f"  · {p.stem}")
+        if not confirm("确认？"):
+            print("已取消")
+            return
+
+        added = _add_apps(cfg, g, paths)
+        total = len(read_folder_apps(BASE / g["name"]))
+        if added:
+            print(f"\n「{g['name']}」现在有 {total} 个 App，图标已刷新。")
+        else:
+            print(f"\n没有新增 App（「{g['name']}」已有 {total} 个）。")
+        if not dock_has(g["name"]):
+            if confirm(f"「{g['name']}」还没在 Dock 里，现在写进去？"):
+                print()
+                cmd_apply(cfg, [g["name"]])
+    except Cancelled:
+        print("已取消")
+
+
+def interactive_new(cfg):
+    """dg new（不带参数）→ 输组名 → 多选 App → 确认 → 问是否直接写进 Dock。"""
+    _require_tty("new")
+    try:
+        name = prompt_group_name(cfg)
+        if not name:
+            return
+        paths = pick_apps(cfg, None)
+        if not paths:
+            print("没有选择任何 App，分组未创建。")
+            return
+
+        print(f"\n将创建分组「{name}」，包含 {len(paths)} 个 App：")
+        for p in paths:
+            print(f"  · {p.stem}")
+        if not confirm("确认创建？"):
+            print("已取消")
+            return
+
+        g = {"name": name, "enabled": True, "placement": "left",
+             "apps": [str(p) for p in paths]}
+        cfg.setdefault("groups", []).append(g)
+        save_config(cfg)
+        print(f"\n已添加分组「{name}」")
+
+        if confirm("直接写进 Dock（自动折叠原图标）？"):
+            print()
+            cmd_apply(cfg, [name])
+        else:
+            print(f"\n稍后写进 Dock：dg apply {name}")
+            print(f"先看图标长啥样：dg preview {name}")
+    except Cancelled:
+        print("已取消")
+
+
 # ─────────────────────────────────────────────────────────── 子命令
 
 def cmd_doctor(cfg, args):
@@ -1033,9 +1409,14 @@ def cmd_init(cfg, args):
 
 
 def cmd_new(cfg, args):
+    do_apply = "--apply" in args
+    if not [a for a in args if not a.startswith("--")]:
+        return interactive_new(cfg)
     args = [a for a in args if not a.startswith("--")]
     if len(args) < 2:
-        sys.exit('用法：new <组名> "App 名或路径" ["更多 App"...]')
+        sys.exit('用法：new <组名> "App 名或路径" ["更多 App"...]\n'
+                 '或直接敲 dg new 进入交互模式（输组名、敲数字选 App）\n'
+                 '一步到位：dg new --apply <组名> "App"...  建完直接写进 Dock')
     gname, specs = args[0], args[1:]
     if find_group(cfg, gname):
         sys.exit(f"分组「{gname}」已存在，改配置或先 remove")
@@ -1046,15 +1427,20 @@ def cmd_new(cfg, args):
     if bad:
         sys.exit("找不到这些 App：" + "、".join(str(b) for b in bad))
     cfg.setdefault("groups", []).append({
-        "name": gname, "enabled": False, "placement": "left",
+        "name": gname, "enabled": True, "placement": "left",
         "apps": [str(p) for p in paths],
     })
     save_config(cfg)
     print(f"已添加分组「{gname}」（{len(paths)} 个 App）：")
     for p in paths:
         print(f"  · {p}")
-    print(f"\n下一步：{SCRIPT_DIR / 'dockgroup.py'} preview {gname}   → 看图标")
-    print(f"       {SCRIPT_DIR / 'dockgroup.py'} apply {gname}     → 写进 Dock")
+    if do_apply:
+        print()
+        cmd_apply(cfg, [gname])
+    else:
+        print(f"\n下一步：{SCRIPT_DIR / 'dockgroup.py'} preview {gname}   → 看图标")
+        print(f"       {SCRIPT_DIR / 'dockgroup.py'} apply {gname}     → 写进 Dock")
+
 
 
 def cmd_list(cfg, args):
@@ -1111,7 +1497,7 @@ def cmd_apply(cfg, args):
             dest, _, ok, missing = build_group(g, style=style)
         else:
             dest, ok, missing = build_launcher_app(g, style=style,
-                                                   material=cfg.get("material", DEFAULT_MATERIAL))
+                                                   material=group_material(cfg, g))
         print(f"  ✓ {g['name']} → {dest}（{len(ok)} 个 App）")
         if missing:
             print(f"       ⚠ 跳过 {len(missing)} 个不存在的 App")
@@ -1135,13 +1521,84 @@ def cmd_rebuild(cfg, args):
         print(f"已刷新：{', '.join(touched) if touched else '无'}（Dock 已重启）")
 
 
+def cmd_style(cfg, args):
+    """换面板底色（毛玻璃材质）。改完立刻重建图标并重启 Dock。
+
+    不带参数 = 看当前用了什么 + 列出所有可选材质。
+    """
+    rest = [a for a in args if not a.startswith("--")]
+    all_ = "--all" in args
+    if not rest:
+        print(f"默认材质：{cfg.get('material', DEFAULT_MATERIAL)}")
+        for g in cfg["groups"]:
+            own = g.get("material")
+            print(f"  {g['name']:<12} {own or '（跟随默认）'}")
+        print("\n可选材质：")
+        for k, desc in MATERIALS.items():
+            print(f"  {k:<18} {desc}")
+        print("\n用法：")
+        print("  dg style 组名 hud       只改一个分组")
+        print("  dg style --all hud      全部改成 hud")
+        print("  dg style 组名 default   该分组退回全局默认")
+        return
+
+    if all_:
+        mat = rest[0]
+    elif len(rest) >= 2:
+        mat = rest[1]
+    else:
+        sys.exit("用法：dg style <组名> <材质>   或   dg style --all <材质>\n"
+                 "跑 `dg style` 看不带参数的用法和材质清单")
+
+    if mat != "default" and mat not in MATERIALS:
+        sys.exit(f"没有「{mat}」这个材质。可选：\n  "
+                 + "\n  ".join(MATERIALS))
+
+    if all_:
+        if mat == "default":
+            cfg.pop("material", None)
+        else:
+            cfg["material"] = mat
+        for g in cfg["groups"]:
+            g.pop("material", None)
+        save_config(cfg)
+        names = [g["name"] for g in cfg["groups"]]
+        print(f"全部 {len(names)} 个分组 → {mat}")
+    else:
+        g = find_group(cfg, rest[0])
+        if not g:
+            sys.exit(f"没有分组「{rest[0]}」")
+        if mat == "default":
+            g.pop("material", None)
+        else:
+            g["material"] = mat
+        save_config(cfg)
+        names = [g["name"]]
+        print(f"「{g['name']}」→ {mat}")
+
+    # 只有真的建过文件夹/启动器的分组才会被 refresh_groups 碰到
+    touched = refresh_groups(cfg, set(names), quiet=True)
+    print(f"已更新：{', '.join(touched) if touched else '无'}（Dock 已重启）")
+    if not touched:
+        print("提示：这些分组还没有生成图标，跑 `dg apply` 才会写进 Dock")
+
+
+def group_material(cfg, g):
+    """取某个分组该用的毛玻璃材质。
+
+    分组自己写了 material 就用自己的，没写才退回顶层默认 —— 这样可以全局定基调、
+    个别分组单独换风格（做风格对比时也靠它）。
+    以前这里只看顶层 cfg["material"]，分组里写 material 是被静默忽略的。
+    """
+    return g.get("material") or cfg.get("material", DEFAULT_MATERIAL)
+
+
 def refresh_groups(cfg, names=None, quiet=False):
     """重建指定分组的图标与启动器，然后重启 Dock。names=None = 全部。
 
     add / del / rebuild 都走这里，保证「改完即生效」。
     """
     style = cfg.get("style", DEFAULT_STYLE)
-    material = cfg.get("material", DEFAULT_MATERIAL)
     touched, skipped = [], []
     for g in cfg["groups"]:
         if names and g["name"] not in names:
@@ -1153,7 +1610,8 @@ def refresh_groups(cfg, names=None, quiet=False):
             if g.get("placement", "left") == "right":
                 build_group(g, style=style, seed=False)
             else:
-                build_launcher_app(g, style=style, material=material, seed=False)
+                build_launcher_app(g, style=style, material=group_material(cfg, g),
+                                   seed=False)
             touched.append(g["name"])
         except SystemExit as e:
             skipped.append(str(e))
@@ -1170,50 +1628,36 @@ def refresh_groups(cfg, names=None, quiet=False):
 
 def cmd_add(cfg, args):
     """往已有分组里加 App：建别名 → 同步配置 → 刷新图标 → 重启 Dock。"""
+    if not [a for a in args if not a.startswith("--")]:
+        return interactive_add(cfg)
     args = [a for a in args if not a.startswith("--")]
     if len(args) < 2:
-        sys.exit('用法：add <组名> "App 名或路径" ["更多 App"...]')
+        sys.exit('用法：add <组名> "App 名或路径" ["更多 App"...]\n'
+                 '或直接敲 dg add 进入交互模式（列分组、列 App，敲数字选）')
     gname, specs = args[0], args[1:]
     g = find_group(cfg, gname)
     if not g:
         sys.exit(f"没有分组「{gname}」。新建一个：dg new {gname} "
                  + " ".join(f'"{s}"' for s in specs))
 
-    folder = BASE / gname
-    folder.mkdir(parents=True, exist_ok=True)
-
-    todo, dup, bad = [], [], []
+    todo, bad = [], []
     for s in specs:
         p = resolve_app(s)
         if p is None:
             bad.append(s)
-        elif (folder / p.stem).exists():
-            dup.append(p.stem)
         elif p not in todo:
             todo.append(p)
-
     if bad:
         print(f"  ⚠ 找不到：{'、'.join(bad)}")
-    if dup:
-        print(f"  · 已在分组里，跳过：{'、'.join(dup)}")
     if not todo:
         sys.exit("没有新增任何 App")
 
-    jxa("mkalias", folder, *todo)
-    for p in todo:
-        print(f"  + {p.stem}")
-
-    # 配置里的 apps 列表同步，保证 groups.json 与文件夹一致
-    apps = g.setdefault("apps", [])
-    known = {str(Path(a).expanduser()) for a in apps}
-    for p in todo:
-        if str(p) not in known:
-            apps.append(str(p))
-    save_config(cfg)
-
-    refresh_groups(cfg, {gname}, quiet=True)
-    total = len(read_folder_apps(folder))
-    print(f"\n「{gname}」现在有 {total} 个 App，图标已刷新。")
+    added = _add_apps(cfg, g, todo)
+    total = len(read_folder_apps(BASE / gname))
+    if added:
+        print(f"\n「{gname}」现在有 {total} 个 App，图标已刷新。")
+    else:
+        print(f"\n没有新增 App（「{gname}」已有 {total} 个）。")
     if not dock_has(gname):
         print(f"它还没在 Dock 里 —— 跑 `dg apply {gname}` 加进去。")
 
@@ -1413,6 +1857,11 @@ QUICK_HELP = """dg — macOS Dock 分组管理
   dg new  组名 App...   新建分组
   dg apply [组名...]    写进 Dock（不填 = 全部启用中的分组）
 
+不想敲名字时（交互引导，敲数字选）：
+  dg add               列分组 → 过滤 App → 多选 → 自动刷新
+  dg new               输组名 → 多选 App → 建完问你要不要直接写进 Dock
+  dg new --apply 组名 App..   新建并一步写进 Dock
+
 其它：
   dg list               分组与 Dock 状态
   dg open 组名          在 Finder 里打开分组文件夹
@@ -1420,6 +1869,7 @@ QUICK_HELP = """dg — macOS Dock 分组管理
   dg remove 组名        从 Dock 移除（保留文件夹）
   dg clean  组名        从 Dock 移除并删掉文件夹
   dg rebuild            全部重新生成图标
+  dg style [组名|--all] [材质]   换面板底色（不带参数 = 看现状 + 材质清单）
   dg doctor             依赖体检
   dg restore            出错了回滚 Dock
   dg --help             完整说明
@@ -1455,7 +1905,8 @@ def main():
         "doctor": cmd_doctor, "init": cmd_init, "new": cmd_new,
         "add": cmd_add, "del": cmd_del, "rm": cmd_del,
         "list": cmd_list, "preview": cmd_preview, "apply": cmd_apply,
-        "rebuild": cmd_rebuild, "open": cmd_open, "test": cmd_test,
+        "rebuild": cmd_rebuild, "style": cmd_style,
+        "open": cmd_open, "test": cmd_test,
         "logs": cmd_logs, "remove": cmd_remove, "clean": cmd_clean,
         "watch-install": cmd_watch_install,
         "watch-uninstall": cmd_watch_uninstall, "restore": cmd_restore,
