@@ -59,6 +59,7 @@ Dock 只支持把「文件夹」放进去，而且**文件夹的点击弹出网�
     watch-install         安装自动监听（文件夹一变就自动刷新图标）
     watch-uninstall       卸载自动监听
     restore [备份]        从最近一次备份恢复 Dock
+    gui [--rebuild]       打开图形界面（分组管理窗口）
 
 apply 可选：--keep-originals 保留左侧原图标，不自动摘除。
 
@@ -303,6 +304,46 @@ def uid() -> str:
     return subprocess.run(["id", "-u"], capture_output=True, text=True).stdout.strip()
 
 
+# ─────────────────────────────────────────────────────────── 隔离属性
+#
+# com.apple.quarantine 只在「从网络下载」时被打上：浏览器、邮件、AirDrop、
+# 下载的 zip 解压后、从网络卷拷来的文件。本地创建的文件永远没有 ——
+# 所以在开发机上怎么测都复现不了，只有真的发出去才炸。
+#
+# 它和签名是两回事：带 quarantine 的 app 即使签名完整，首次打开也会被
+# Gatekeeper 拦下来报「无法验证开发者」。用户看到这句会以为签名坏了，
+# 其实只要把属性清掉就能开。
+
+def quarantine_listing(path) -> str:
+    """递归列出整棵目录树上的扩展属性，用来判断有没有隔离标记。"""
+    r = sh(["xattr", "-r", "-l", str(path)])
+    return r.stdout or ""
+
+
+def has_quarantine(path) -> bool:
+    p = Path(path)
+    return p.exists() and "com.apple.quarantine" in quarantine_listing(p)
+
+
+def strip_quarantine(path) -> bool:
+    """清掉整棵目录树上的隔离属性，返回是否真的清过。
+
+    为什么构建完必须做：产物要能脱离「我这台机器」运行。三条路都会带进来 ——
+      ① 下载 release zip 解压：源码带隔离，生成的 .app 会继承；
+      ② 用 Safari / 邮件收到别人打包的 .app：直接带；
+      ③ 从 U 盘、网络卷、共享目录拷过来的仓库。
+
+    `xattr -cr` 递归清，属性不存在也不报错。
+    """
+    p = Path(path)
+    if not p.exists():
+        return False
+    if "com.apple.quarantine" not in quarantine_listing(p):
+        return False
+    sh(["xattr", "-cr", str(p)])
+    return True
+
+
 # Finder 自动化被 TCC 拦截（-10004），所以全部走 Foundation，不碰 Finder。
 JXA = {
     # 取 App 图标：能正确处理 Assets.car，比翻 Contents/Resources/*.icns 可靠
@@ -520,12 +561,16 @@ def _drop_shadow(canvas, icon, pos, blur=0.011, offset=0.007, strength=0.34):
     canvas.paste(Image.new("RGBA", canvas.size, (30, 32, 42, 255)), (0, 0), mask)
 
 
-def make_mosaic(icon_paths, out, size: int = 1024,
-                style: str = DEFAULT_STYLE) -> Path:
-    """把若干 App 图标合成一张 iOS 风格的文件夹图标。"""
-    out = Path(out)
-    S = size
-    st = STYLES.get(style, STYLES[DEFAULT_STYLE])
+def _panel_base(S, st):
+    """画图标底板：投影 + 渐变 + 内圈高光 + 外圈描边。
+
+    返回 (canvas, box, side)。拼贴图标和管理窗口图标共用这一份 —— 两边的底板
+    必须逐像素一致，并排出现在 Dock 里才像一家人。
+
+    抽出来的原因：2026-09-20 加管理窗口图标时，我照着 make_mosaic 另抄了一段，
+    漏掉了 ICON_INSET（底板只占 85% 边长，不是铺满），结果底板比分组图标大一圈、
+    圆角也对不上。这类几何常量只要允许抄第二遍，就一定会漂。
+    """
     inset = int(S * ICON_INSET)
     box = (inset, inset, S - inset, S - inset)
     side = box[2] - box[0]
@@ -561,6 +606,18 @@ def make_mosaic(icon_paths, out, size: int = 1024,
         off = max(1, int(S * o))
         d.rounded_rectangle((box[0] - off, box[1] - off, box[2] + off, box[3] + off),
                             radius=radius + off, outline=col, width=off)
+
+    return canvas, box, side
+
+
+def make_mosaic(icon_paths, out, size: int = 1024,
+                style: str = DEFAULT_STYLE) -> Path:
+    """把若干 App 图标合成一张 iOS 风格的文件夹图标。"""
+    out = Path(out)
+    S = size
+    st = STYLES.get(style, STYLES[DEFAULT_STYLE])
+    canvas, box, side = _panel_base(S, st)
+    inset = box[0]
 
     n = len(icon_paths)
     pad, gap = int(side * st["pad"]), int(side * st["gap"])
@@ -823,7 +880,134 @@ def build_launcher_app(g, style=DEFAULT_STYLE, force=False,
                 os.utime(d_, None)
             except OSError:
                 pass
+    # 最后统一清一次隔离属性 —— 产物要能脱离「我这台机器」。
+    # 放在签名之后是安全的：quarantine 不在 codesign 的保护范围内，
+    # 清它不会让签名失效。（真正影响签名的是文件内容，那些我们不碰。）
+    if strip_quarantine(app):
+        print(f"  已清除「{app.name}」继承来的隔离属性"
+              "（否则首次打开会被 Gatekeeper 拦）")
     return app, ok, missing
+
+
+MANAGER_SRC = "manager/main.swift"
+
+
+def manager_binary(force=False) -> Path:
+    """编译管理窗口二进制。判据和 launcher_binary 一致：按源码内容摘要，
+    不看 mtime —— codesign 会把签名写进可执行文件，mtime 判据必然失效。
+    """
+    src = SCRIPT_DIR / MANAGER_SRC
+    if not src.exists():
+        raise SystemExit(f"找不到管理窗口源码：{src}")
+    cached = CACHE / ".manager.bin"
+    stamp = CACHE / ".manager.src-stamp"
+    digest = hashlib.sha256(src.read_bytes()).hexdigest()
+    if (not force and cached.exists() and stamp.exists()
+            and stamp.read_text().strip() == digest):
+        return cached
+    CACHE.mkdir(parents=True, exist_ok=True)
+    # -parse-as-library：SwiftUI 的 @main 不能和顶层代码共存，不加这个
+    # 编译直接报「'main' attribute cannot be used in a module that contains
+    # top-level code」。
+    sh(["swiftc", "-swift-version", "5", "-parse-as-library", "-O",
+        "-o", str(cached), str(src),
+        "-framework", "SwiftUI", "-framework", "Cocoa"], check=True)
+    sh(["chmod", "+x", str(cached)])
+    stamp.write_text(digest)
+    return cached
+
+
+def make_manager_icon(out: Path) -> Path:
+    """画管理窗口的 Dock 图标。
+
+    为什么不复用分组的拼贴图：拼贴图表达的是「某个分组里有什么」，而管理窗口管的是
+    全部分组 —— 拿其中一个分组的样子当门面会误导。这里画抽象版：graphite 底板 +
+    2×2 格子，和分组图标同一套视觉语言，内容中性。
+
+    右下那一格用强调色（其余白色），是为了在 Dock 里一眼和分组图标区分开 ——
+    两者底色和圆角都一样，纯靠格子颜色分辨。
+    """
+    S = 1024
+    st = STYLES[DEFAULT_STYLE]
+    canvas, box, side = _panel_base(S, st)
+    inset = box[0]
+
+    pad, gap = int(side * st["pad"]), int(side * st["gap"])
+    cell = (side - 2 * pad - gap) // 2
+    d = ImageDraw.Draw(canvas)
+    for r in range(2):
+        for c in range(2):
+            x = inset + pad + c * (cell + gap)
+            y = inset + pad + r * (cell + gap)
+            fill = (55, 138, 221, 250) if (r, c) == (1, 1) else (255, 255, 255, 234)
+            d.rounded_rectangle((x, y, x + cell - 1, y + cell - 1),
+                                radius=int(cell * 0.16), fill=fill)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(out)
+    return out
+
+
+def build_manager_app(force=False) -> Path:
+    """打包管理窗口 App —— 全机只有一个，不随分组变化。
+
+    和 build_launcher_app 的差别：这是有 Dock 图标、能被双击的普通 App，
+    所以不设 LSUIElement。
+
+    DockGroupScript 必须写绝对路径：GUI 进程的 PATH 只有 /usr/bin:/bin，
+    里面也没有 dg 这个短命令，只能靠 Info.plist 把引擎位置告诉它。
+    """
+    binary = manager_binary(force=force)
+    app = APPS / "DockGroup.app"
+    exe = app / "Contents/MacOS/DockGroupManager"
+    icon = app / "Contents/Resources/AppIcon.icns"
+    info = app / "Contents/Info.plist"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    icon.parent.mkdir(parents=True, exist_ok=True)
+
+    icon_png = make_manager_icon(CACHE / "manager-icon.png")
+
+    plist = {
+        "CFBundleExecutable": "DockGroupManager",
+        "CFBundleIdentifier": "local.dockgroup.manager",
+        "CFBundleName": "DockGroup",
+        "CFBundleDisplayName": "DockGroup 设置",
+        "CFBundleIconFile": "AppIcon",
+        "CFBundlePackageType": "APPL",
+        "CFBundleShortVersionString": "0.1.0",
+        "CFBundleVersion": "1",
+        "LSMinimumSystemVersion": "12.0",
+        "NSHighResolutionCapable": True,
+        # 没有它，SwiftUI 的 @main App 在 bundle 里不会建出 NSApplication，
+        # 表现是「进程起来了但没窗口」。
+        "NSPrincipalClass": "NSApplication",
+        "DockGroupScript": str(SCRIPT_DIR / "dockgroup.py"),
+    }
+
+    # 图标进摘要：只改画图逻辑不重打包的话，Dock 里还是旧图标。
+    digest = hashlib.sha256(
+        plistlib.dumps(plist) + binary.read_bytes()
+        + icon_png.read_bytes()).hexdigest()
+    stamp = CACHE / "manager.bundle-stamp"
+    if (force or not exe.exists() or not stamp.exists()
+            or stamp.read_text().strip() != digest):
+        shutil.copyfile(binary, exe)
+        os.chmod(exe, 0o755)
+        png_to_icns(icon_png, icon)
+        with info.open("wb") as f:
+            plistlib.dump(plist, f)
+        sh(["codesign", "--force", "--sign", "-", str(app)])
+        stamp.write_text(digest)
+        if Path(LSREGISTER).exists():
+            sh([LSREGISTER, "-f", str(app)])
+        for d_ in (app, app / "Contents", app / "Contents/Resources", icon, exe):
+            try:
+                os.utime(d_, None)
+            except OSError:
+                pass
+    if strip_quarantine(app):
+        print(f"  已清除「{app.name}」继承来的隔离属性"
+              "（否则首次打开会被 Gatekeeper 拦）")
+    return app
 
 
 def tile_for(g) -> dict:
@@ -1494,6 +1678,32 @@ def cmd_doctor(cfg, args):
         print("    xcode-select --install")
         print("  只想用右侧文件夹模式的话，缺 swiftc 也能跑（placement 设成 right）。")
 
+    # ── 分发与签名 ──
+    # 这一节存在的理由：签名身份和隔离属性都属于「本机自测一路绿灯、发出去才炸」
+    # 的事。用户来报「打不开」，先看这里就能分清是哪一种。
+    print()
+    print("  分发与签名：")
+
+    ident = sh(["security", "find-identity", "-v", "-p", "codesigning"]).stdout or ""
+    n_id = len(re.findall(r"^\s+\d+\)", ident, re.M))
+    if n_id:
+        print(f"    ✅ 签名身份 : {n_id} 个可用（能签 Developer ID，发给别人不会被拦）")
+    else:
+        print("    ⚠️ 签名身份 : 无 —— 只能用 ad-hoc 签名（codesign -s -）")
+        print("              本机自用没问题。把 .app 发给别人，对方会被 Gatekeeper")
+        print("              拦下，需要右键→打开，或清掉隔离属性。见 README「分发与签名」。")
+
+    built = sorted(APPS.glob("*.app"))
+    if not built:
+        print("    ·  产物     : 还没生成过 App")
+    else:
+        dirty = [a.name for a in built if has_quarantine(a)]
+        if dirty:
+            print(f"    ⚠️ 隔离属性 : {'、'.join(dirty)} 带 com.apple.quarantine")
+            print("              首次打开会被拦。跑 dg rebuild / dg gui 会自动清掉。")
+        else:
+            print(f"    ✅ 隔离属性 : {len(built)} 个 App 都干净")
+
 
 def cmd_init(cfg, args):
     force = "--force" in args
@@ -2062,6 +2272,7 @@ QUICK_HELP = """dg — macOS Dock 分组管理
   dg new --apply 组名 App..   新建并一步写进 Dock
 
 其它：
+  dg gui                打开图形界面（分组管理窗口，改完即时预览）
   dg list               分组与 Dock 状态
   dg open 组名          在 Finder 里打开分组文件夹
   dg logs 组名          查看运行日志
@@ -2073,6 +2284,20 @@ QUICK_HELP = """dg — macOS Dock 分组管理
   dg restore            出错了回滚 Dock
   dg --help             完整说明
 """
+
+
+def cmd_gui(cfg, args):
+    """打开图形界面：分组管理窗口。
+
+    第一次跑要编译打包（十来秒），之后走缓存秒开。窗口里改「外观」是即时出图的，
+    但和命令行一样，得点「应用到 Dock」才真正写进 Dock —— 这个分界是故意的：
+    外观可以随便试，试错成本为零。
+    """
+    app = build_manager_app(force="--rebuild" in args)
+    print(f"管理窗口：{app}")
+    sh(["open", str(app)])
+    print("已打开。加 App、换外观、应用/回滚都能在里面点。")
+    print(f"（改不了界面本身的话，源码在 {SCRIPT_DIR / MANAGER_SRC}）")
 
 
 def print_quick_help():
@@ -2109,6 +2334,7 @@ def main():
         "logs": cmd_logs, "remove": cmd_remove, "clean": cmd_clean,
         "watch-install": cmd_watch_install,
         "watch-uninstall": cmd_watch_uninstall, "restore": cmd_restore,
+        "gui": cmd_gui,
     }
     if cmd not in table:
         sys.exit(f"未知命令：{cmd}（跑 `dg` 看可用命令）")

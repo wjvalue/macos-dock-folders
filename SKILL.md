@@ -1,6 +1,6 @@
 ---
 name: macos-dock-folders
-description: 把 macOS Dock 里的一堆 App 折叠成可点击展开的图标，或整理/去重 Dock 布局。当用户说"Dock 图标太多/太挤"、"想在 Dock 里建文件夹"、"像手机那样分组应用"、"Dock 整理"、"Dock 图标大小统一"、"Dock 位置不对"时使用。含现成工具：实时合成 2×2 拼贴图标 + 写入 Dock + 自动监听 + 一键备份恢复。
+description: 把 macOS Dock 里的一堆 App 折叠成可点击展开的图标，或整理/去重 Dock 布局。当用户说"Dock 图标太多/太挤"、"想在 Dock 里建文件夹"、"像手机那样分组应用"、"Dock 整理"、"Dock 图标大小统一"、"Dock 位置不对"时使用。含现成工具：实时合成 2×2 拼贴图标 + 写入 Dock + 自动监听 + 一键备份恢复 + 图形界面（dg gui）。
 agent_created: true
 ---
 
@@ -35,6 +35,17 @@ printf '#!/bin/bash\nexec /usr/bin/python3 "%s/scripts/dockgroup.py" "$@"\n' "$P
 chmod +x ~/.local/bin/dg          # 确认 ~/.local/bin 在 PATH 里
 ```
 
+> **装不上 / 打不开时先看这条**：如果源码是从 zip 下载来的（不是 `git clone`），
+> 每个文件都带 `com.apple.quarantine`，生成的 `.app` 会继承它，双击被 Gatekeeper
+> 拦下报「无法验证开发者」。**这不是签名坏了** —— 清掉标记就能开：
+> 双击 `tools/install.command`（清隔离 + 装 dg + 体检一条龙，**不会覆盖已有的 dg**），
+> 或在仓库根目录 `xattr -cr .`。
+>
+> 本项目用 **ad-hoc 签名**（`codesign -s -`）：没有 Apple 开发者账号（$99/年），
+> 所以不做签名与公证。ad-hoc 本机自用完全够 —— 只有把 `.app` 二进制直接发给别人才
+> 会被拦，推荐的分发方式是「源码 + 本地构建」，不受影响。构建流程每次都会清一遍
+> 隔离标记兜底；`dg doctor` 末尾会报告签名身份和产物隔离状态。
+
 ```bash
 dg                      # 不带参数 = 帮助 + 当前分组状态
 dg doctor               # 先体检依赖
@@ -45,6 +56,7 @@ dg del  AI "App3"       # 从分组删 App（只删别名；真实 App 会拒绝
 dg preview [组名]       # 只合成图标预览，不动 Dock —— 改前必跑
 dg apply   [组名]       # 生成并写入 Dock
 dg rebuild              # 全部重新生成图标并重启 Dock
+dg gui                  # 图形界面（分组管理窗口）
 dg list / style / layout / open / test / logs / remove / clean / watch-install / restore
 ```
 
@@ -60,6 +72,22 @@ dg list / style / layout / open / test / logs / remove / clean / watch-install /
 > 一条命令就够。App 名支持模糊匹配，`dg add AI chro` 能加上 Google Chrome。
 >
 > `del` 有安全防护：只 `unlink` 文件（别名），条目若是目录（真实 App）会跳过并提示。
+
+> **图形界面（用户明确说"不想敲命令行"时首选这条）**：`dg gui` 打开管理窗口 ——
+> 左栏切分组 / 开关是否进 Dock / 新建分组；中栏看成员、从 Finder 拖 `.app` 进来、
+> 悬停点 `−` 移除；右栏换图标风格、面板材质、面板排列，**改完立刻重算预览图**；
+> 底栏应用到 Dock / 移除 / 删除 / 看引擎输出。
+> 第一次跑要编译打包（十来秒，`swiftc` 编 `scripts/manager/main.swift`），之后走缓存秒开；
+> 改过窗口源码要 `dg gui --rebuild`。
+>
+> 三条要记住的设计：
+> ① **外观改动不写 Dock** —— 预览是即时重算拼贴图标的，点「应用到 Dock」才落地，
+>    所以 7×13×4 种组合可以随便试而不闪 Dock；
+> ② 增删 / 应用 / 移除 / 回滚**一律转发给本脚本**，只有外观三项直接写 `groups.json`
+>    （为了即时预览），两边逻辑和文件格式逐字节一致（`DockGroupManager --dump-config`
+>    可以验证往返，见下）；
+> ③ 它是普通 App（有 Dock 图标，不设 `LSUIElement`），和每分组一个的分组启动器不是一回事，
+>    产物在 `~/Dock Groups/.apps/DockGroup.app`。
 
 ## 标准流程
 
