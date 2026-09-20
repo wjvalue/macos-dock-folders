@@ -105,6 +105,18 @@ dg list / style / layout / open / test / logs / remove / clean / watch-install /
 > 现在 `apply` / `rebuild` / `add` / `del` 都会走 `kill_launchers()` 自动收拾干净，
 > 但**手工改 bundle、或直接改 Info.plist 不会**，那时要自己 `pkill`。
 
+> ⚠️ **「不管选哪个排列版本，某个分组永远是同一种」？先查它有没有分组级覆盖。**
+> `groups.json` 里分组可以自带 `layout` / `style` / `material`，**优先级高于全局**。
+> 命令行：`dg layout <组名> <模式>` 加覆盖、`dg layout <组名> default` 清掉。
+> 管理窗口里这类分组会标一个橙色滑块图标，右栏写明覆盖了什么并给「改回跟随全局」按钮。
+>
+> 2026-09-20 修的相关缺陷：管理窗口的 `save()` 原先把内存里的 `groups` **整体覆盖**
+> 磁盘文件 —— 引擎给某分组加了覆盖、GUI 内存里随后也有了之后，用户在 GUI 里改**全局**
+> 排列会把那份分组覆盖又写回去，于是全局怎么改都盖不过它，而且当时 GUI 根本不显示
+> 分组级覆盖，完全无从排查。现在 `save()` 默认只写外观三项、**分组结构以磁盘为准**
+> （要动结构得显式 `refreshGroups: true`），写完还会把内存对齐到磁盘。
+> **教训：拿内存快照整体覆盖共享文件，迟早踩到。**
+
 ## 标准流程
 
 1. **读现状**：`dg list`，或 `defaults read com.apple.dock persistent-apps` + percent-decode。

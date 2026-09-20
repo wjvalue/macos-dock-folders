@@ -188,6 +188,10 @@ private func jsonQuote(_ s: String) -> String {
 }
 
 extension AppGroup {
+    /// 有没有分组级的外观覆盖。有覆盖就不跟随全局设置 ——
+    /// GUI 之前完全不显示这个状态，于是「改了全局没反应」时用户只能干瞪眼（2026-09-20 踩过）。
+    var hasOverrides: Bool { layout != nil || style != nil || material != nil }
+
     func jsonText(indent: String = "    ") -> String {
         let inner = indent + "  "
         var fields: [String] = []
@@ -284,17 +288,50 @@ final class AppModel: ObservableObject {
 
     /// 落盘 groups.json。这是唯一由 GUI 直接写文件的地方 ——
     /// 其余会改配置的动作全部交给引擎，避免两边各写一份。
-    func save() {
-        let cfg = Config(style: style, material: material, layout: layout, groups: groups)
+    ///
+    /// **默认只写「外观三项」，分组结构以磁盘为准。** 这是有意的：GUI 内存里的
+    /// `groups` 随时可能过期（命令行 `dg add` / `dg del` / `dg layout` 动过，或引擎
+    /// 在 GUI 之外改过文件），拿旧快照整体覆盖过去会把那些改动抹掉。
+    ///
+    /// 实测踩过（2026-09-20）：引擎给某个分组加了 `layout` 覆盖，GUI 内存里随后也有了
+    /// 这份覆盖；用户在 GUI 里改**全局**排列并保存时，又把那份分组覆盖写了回去 ——
+    /// 表现是「不管选哪个排列版本，那个分组永远是一种排布」，而且当时无从排查
+    /// （GUI 根本不显示分组级覆盖）。现在两条都修了：这里默认不碰 groups，
+    /// 分组行上也会标出「有自定义外观」。
+    ///
+    /// 确实要动分组结构时（开关分组 / 新建 / 删除）显式传 `refreshGroups: true`。
+    func save(refreshGroups: Bool = false) {
+        var disk = readDisk() ?? Config(groups: groups)
+        disk.style = style
+        disk.material = material
+        disk.layout = layout
+        if refreshGroups { disk.groups = groups }
         do {
             try FileManager.default.createDirectory(at: P.base, withIntermediateDirectories: true)
-            try cfg.jsonText().write(to: P.config, atomically: true, encoding: .utf8)
+            try disk.jsonText().write(to: P.config, atomically: true, encoding: .utf8)
             installed = true
             dirty = true
+            // 写完把内存对齐到磁盘 —— 后续操作基于真实内容，不再拿旧快照做决定
+            groups = disk.groups
         } catch {
             status = "保存配置失败：\(error.localizedDescription)"
             statusIsError = true
         }
+    }
+
+    /// 读磁盘上的配置。save() 拿它当基底，避免用过期内存整体覆盖。
+    private func readDisk() -> Config? {
+        guard let data = try? Data(contentsOf: P.config) else { return nil }
+        return try? JSONDecoder().decode(Config.self, from: data)
+    }
+
+    /// 清掉某个分组的外观覆盖，让它重新跟随全局。
+    func clearOverrides(_ name: String) {
+        guard let i = index(of: name) else { return }
+        groups[i].layout = nil
+        groups[i].style = nil
+        groups[i].material = nil
+        save(refreshGroups: true)
     }
 
     // 外观三项。改动都立刻落盘 groups.json —— 两个原因：
@@ -431,7 +468,7 @@ final class AppModel: ObservableObject {
         guard !n.isEmpty, index(of: n) == nil else { return }
         groups.append(AppGroup(name: n, enabled: false, apps: []))
         selection = n
-        save()
+        save(refreshGroups: true)
         status = "已建「\(n)」—— 拖 App 进来，再点「应用到 Dock」"
         statusIsError = false
     }
@@ -440,7 +477,7 @@ final class AppModel: ObservableObject {
         guard let i = index(of: name) else { return }
         groups.remove(at: i)
         if selection == name { selection = groups.first?.name }
-        save()
+        save(refreshGroups: true)
         Task { await run(["clean", name]) }
     }
 
@@ -564,9 +601,15 @@ struct GroupRow: View {
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 2)
+            if group.hasOverrides {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.orange)
+                    .help("这个分组有自己的外观设置，不跟随全局")
+            }
             Toggle("", isOn: Binding(
                 get: { group.enabled },
-                set: { group.enabled = $0; model.save() }
+                set: { group.enabled = $0; model.save(refreshGroups: true) }
             ))
             .labelsHidden()
             .toggleStyle(.switch)
@@ -729,6 +772,24 @@ struct Inspector: View {
             .padding(.horizontal, 16)
             .padding(.top, 16)
 
+            // 分组级覆盖提示。引擎（或命令行）可能给某个分组单独设过外观，那它就不
+            // 跟随上面三项 —— 不摊开说，用户只会以为「设置失灵了」。
+            if let g = model.current, g.hasOverrides {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("「\(g.name)」有自定义外观（\(overrideSummary(g))），不跟随上面三项")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("改回跟随全局") { model.clearOverrides(g.name) }
+                        .controlSize(.small)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.12)))
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+            }
+
             if model.dirty {
                 Text("改动还没写进 Dock —— 点右下角「应用到 Dock」")
                     .font(.system(size: 11))
@@ -775,6 +836,14 @@ struct Inspector: View {
                 .fill(Color(nsColor: .controlBackgroundColor))
         )
         .padding(.horizontal, 16)
+    }
+
+    private func overrideSummary(_ g: AppGroup) -> String {
+        var out: [String] = []
+        if let v = g.layout { out.append("排列 \(v)") }
+        if let v = g.style { out.append("风格 \(v)") }
+        if let v = g.material { out.append("材质 \(v)") }
+        return out.joined(separator: "、")
     }
 
     private func picker(_ title: String, selection: Binding<String>,
