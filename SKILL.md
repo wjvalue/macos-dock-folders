@@ -380,7 +380,7 @@ dg list / style / layout / open / test / logs / remove / clean / watch-install /
       改完对账：`dg layout` 打印的「n 个 App → 几×几  宽×高」应该和
       `dg logs <组名>` 里 `panel: … grid=…x… size=…x… cell=…x…` 完全一致。
 
-22. **「和 Dock 条一样高」的两档排列：`dock` / `dock-name`**（2026-09-20 加，
+22. **贴着 Dock 尺寸的三档排列：`dock` / `dock-name` / `dock-grid`**（2026-09-20 加，
     用户原话「长条框感觉有些大，改成和 dock 栏一样高度大小看看效果如何」）：
     - **Dock 条多高、图标多大，量出来而不是猜**。本机三个数（Dock 图标 64、底部 Dock、
       1408×881）：
@@ -398,6 +398,16 @@ dg list / style / layout / open / test / logs / remove / clean / watch-install /
         图标 = 72-28 = **44 ≈ Dock 图标同大**，**不画名字**（改挂 `toolTip = title`，
         走系统原生悬停提示，原生 Dock 也是这个交互）→ 4 个 App = **254×72**
       - `dock-name` —— 让出 8pt 给名字（面板 **80**），图标锁 42 → 4 个 App = **378×80**
+      - `dock-grid` —— **无字网格**（同日追加，用户原话「四宫格也需要类似 dock 栏双倍
+        高度大小的无字版本」）。格子取正方，并让「两行 = 两倍条高」成立：
+        `2*bar = pad*2 + 2*cell + gap` → `cell = bar - pad - gap/2`（bar=72 → **55**），
+        图标 = 格子 × 0.8 ≈ **44**（正好又落回 Dock 图标同档）。于是 2×2 = **144×144**：
+        既是 72×2，又天然是正方形。行数多了线性长高（6 个 App → 205×144）。
+        与 `auto` 的分工：auto 是独立大格子（100）+ 名字，**完全不看 Dock 尺寸**；
+        dock-grid 一切从条高推，所以永远和 Dock 成整数倍。
+        ⚠️ 真机值会略小于预览值：`dockBarHeight()` 拿的是运行时可用区（本机实测给 **69**，
+        不是标称的 72），所以 4 个 App 的真机面板是 **138×138**，而 `dg layout` 里显示的
+        是按 `DOCK_BAR_DEFAULT=72` 估的 144 —— 对账时别把这两个数当成不一致。
     - **高度按屏幕实时推算，不写死**：`dockBarHeight()` = `可用区高度 - 8`，夹进
       `[56, 96]`；`reserved ≤ 20`（Dock 隐藏或贴侧边）时退回 72。用户改 Dock 图标大小
       后面板跟着走。Python 侧拿不到屏幕尺寸，只用 `DOCK_BAR_DEFAULT = 72` 做**预览估算**。
@@ -439,7 +449,7 @@ dg list / style / layout / open / test / logs / remove / clean / watch-install /
 | 弹出栏被 Dock 挡住 | `isFloatingPanel` 把 level 压到 3 了 → 重跑 `apply` 重新编译 |
 | 面板四角有直角块 | 圆角只裁到了 contentView。theme frame 也要设 `cornerRadius` + `masksToBounds`、给毛玻璃设 `maskImage`、再 `invalidateShadow()`（第 14 条） |
 | 换了 material 但面板没变化 | ① `appearance` 必须设在毛玻璃视图上，只设 window 无效（第 15 条）② 二进制没跟着源码走（第 20 条）：看日志里的 `panel: material=[…]` |
-| 面板比 Dock 高一截 | 默认是 `row`（132pt）。`dg layout --all dock` 换成和 Dock 条等高（72pt、无名字，悬停出提示）；`dg layout 组名 dock-name` 是保留名字的那档（80pt）。两者都按屏幕可用区实时算高度（第 22 条） |
+| 面板比 Dock 高一截 | 默认是 `row`（132pt）。`dg layout --all dock` 换成和 Dock 条等高（72pt、无名字，悬停出提示）；`dock-name` 是保留名字的那档（80pt）；`dock-grid` 是**两倍条高的无字网格**（2×2 = 144×144）。三档都按屏幕可用区实时算高度（第 22 条） |
 | dock 模式下图标大小 / 名字不对 | 看 `panel: … icon=… label=…`：`label=false` 是 `dock`，`icon` 应当是「条高 - 28」。数值不对 = 二进制没跟着源码走（第 20 条） |
 | 改了 `main.swift`，rebuild 后界面没变 | 第 20 条。先看 `.cache/<组名>.events.log` 的 `panel:` / `shine:` 两行；强制重编：`rm -f ~/Dock\ Groups/.cache/.launcher.src-stamp` 再 `dg rebuild` |
 | 点 Dock 图标看到的还是旧面板 | ① `.cache/<组名>.events.log` 里没有 `panel:` 行 = 跑的是旧二进制（rebuild 一次）② `winlist` 的窗口尺寸和布局常量算出来的对不上 = 陈旧进程（第 19 条） |

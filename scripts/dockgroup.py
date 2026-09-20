@@ -184,6 +184,13 @@ MATERIALS = {
 #   dock       面板 = Dock 条高（72），图标撑满、不画名字（悬停出系统提示）
 #   dock-name  面板 = Dock 条高 + 8（80），图标缩到 42 = Dock 图标真实大小，名字照常显示
 #
+# dock-grid 是 dock 系的第三档「无字网格」（2026-09-20 加）：格子规格和 dock 同源
+# （图标 44 = Dock 图标同档、同样不画名字），但按网格排。设计目标是**两行时面板高
+# 正好等于 Dock 条的两倍**，于是 2×2 四宫格 = 144×144 —— 既是 72×2，又天然是正方形。
+# 推导：2*bar = pad*2 + 2*cell + gap  →  cell = bar - pad - gap/2。
+# 行数再多高度按行数线性涨（5~6 个 → 3×2 = 205×144），这是「和 Dock 成整数倍」的自然
+# 延伸。它和 auto 的分工：auto 是独立的大格子（100）+ 名字，完全不看 Dock 尺寸。
+#
 # 历史：列数原来是 `min(kMaxCols, n)`，n ≤ 4 时列数恒等于 n、行数恒为 1 —— 所以
 # 3~4 个 App 的分组点开永远只有一条长条。现在 row 模式字面上就是这个旧行为，
 # auto 模式才按应用数推导列数。
@@ -196,6 +203,8 @@ LAYOUTS = {
             "4 个 App 是 242×72，弹在 Dock 上像同一条栏的延续",
     "dock-name": "和 Dock 条等高，另让 8pt 给名字（80）。图标 42 = Dock 图标真实大小；"
                  "4 个 App 是 378×80",
+    "dock-grid": "和 Dock 条两倍等高 · 无字网格。格子与 dock 同源（图标 44、不画名字），"
+                 "两行时面板高 = 条高 ×2；3~4 个 App 是 144×144（同时也是正方形）",
     "2":    "固定 2 列",
     "3":    "固定 3 列",
     "4":    "固定 4 列",
@@ -226,6 +235,9 @@ def panel_geom(mode):
 
     长条模式 86 宽（横向排开更紧凑）；网格模式 100 宽，与格子高度相等 —— 格子方了，
     n×n 的面板才是正方形。之前网格也沿用 86，2×2 就成了 211×239 的竖长方形。
+
+    dock 系三档另外算：dock / dock-name 按 Dock 条高推（见常量区的注释），
+    dock-grid 取正方格子 55（= bar - pad - gap/2），于是两行时面板高正好是条高的两倍。
     """
     m = str(mode).strip().lower()
     if m in ("dock", "dock-name"):
@@ -234,6 +246,12 @@ def panel_geom(mode):
             return icon + 8, icon, DOCK_PAD, DOCK_GAP
         return (CELL_W_ROW, DOCK_BAR_DEFAULT - DOCK_NAME_PAD * 2 + 8,
                 DOCK_NAME_PAD, DOCK_GAP)
+    if m == "dock-grid":
+        # 格子取正方，且让「两行 = 两倍条高」成立：
+        #   2*bar = pad*2 + 2*cell + gap  →  cell = bar - pad - gap/2 = 55（bar=72）
+        # 于是 2×2 是 144×144 —— 既是 72×2 又正好是正方形。
+        cell = int(DOCK_BAR_DEFAULT - DOCK_PAD - DOCK_GAP / 2)
+        return cell, cell, DOCK_PAD, DOCK_GAP
     return (CELL_W_ROW if m == "row" else CELL_W_GRID), CELL_H, CELL_PAD, CELL_GAP
 
 
@@ -1986,6 +2004,7 @@ def cmd_layout(cfg, args):
         print("  dg layout 组名 row        只让这个分组保持原来的长条样式")
         print("  dg layout 组名 dock       改成和 Dock 条等高（图标撑满、不显示名字）")
         print("  dg layout 组名 dock-name  和 Dock 条等高 + 保留名字（比 Dock 高 8pt）")
+        print("  dg layout 组名 dock-grid  和 Dock 条两倍等高 · 无字网格（2×2 = 144×144）")
         print("  dg layout --all auto      全部改成自适应网格")
         print("  dg layout 组名 default    该分组退回全局默认")
         return

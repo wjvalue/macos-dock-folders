@@ -115,6 +115,10 @@ func dockBarHeight() -> CGFloat {
 ///              不画名字（高度全留给图标，名字走悬停原生提示）。4 个 App = 242×72。
 ///   dock-name  同上，但让 8pt 给名字（面板 80），图标 42 = Dock 图标的真实大小。
 ///              名字照常显示，代价是比 Dock 条高一点点。4 个 App = 378×80。
+///   dock-grid  **和 Dock 条两倍等高**的无字网格：格子取正方 55（= bar - pad - gap/2），
+///              于是两行时面板高正好是条高的两倍 —— 2×2 = 144×144，同时也还是正方形。
+///              图标 44 = Dock 图标同档，不画名字。和 auto 的分工：auto 是独立的大格子
+///              （100）+ 名字，根本不看 Dock 尺寸；dock-grid 一切都从条高推。
 func geometry(for layout: String) -> PanelGeometry {
     let mode = layout.trimmingCharacters(in: .whitespaces).lowercased()
 
@@ -137,6 +141,18 @@ func geometry(for layout: String) -> PanelGeometry {
                              icon: icon, showLabel: true, iconInset: 4, labelY: 4)
     }
 
+    if mode == "dock-grid" {
+        // 让「两行 = 两倍条高」成立：2*bar = pad*2 + 2*cell + gap → cell = bar - pad - gap/2。
+        // bar = 72 时 cell = 55，图标取格子的 0.8 ≈ 44 —— 正好和 Dock 图标同档。
+        // 格子是正方，所以 2×2 = 144×144：既是条高两倍，又天然是正方形。
+        let bar = dockBarHeight()
+        let pad: CGFloat = 14, gap: CGFloat = 6
+        let cell = bar - pad - gap / 2
+        return PanelGeometry(cellW: cell, cellH: cell, pad: pad, gap: gap,
+                             icon: (cell * 0.8).rounded(), showLabel: false,
+                             iconInset: 0, labelY: 0)
+    }
+
     // 长条模式保持原来的 86×100 不变；网格模式换 100×100，于是 2×2 是 239×239、
     // 3×3 是 346×346，都是正方形。
     return PanelGeometry(cellW: mode == "row" ? kCellW : kCellWGrid,
@@ -152,6 +168,7 @@ func geometry(for layout: String) -> PanelGeometry {
 ///
 ///   row   —— **默认**。旧的长条样式：能铺一行就铺一行，放不下才按 kMaxCols 换行
 ///   dock / dock-name —— 同样单行铺开（只是格子尺寸不同，见 geometry(for:)）
+///   dock-grid —— **走网格**（和 auto 同一套列数推导），只是格子小一号且不画名字
 ///   auto  —— 按应用数选最接近正方形的网格：
 ///             1 个 → 1×1          2 个 → 2×1
 ///             3~4 个 → 2×2（四宫格）

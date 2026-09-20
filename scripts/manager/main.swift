@@ -86,9 +86,10 @@ let kMaterials: [(String, String)] = [
 
 let kLayouts: [(String, String)] = [
     ("row",       "长条（默认）"),
-    ("auto",      "自适应网格"),
-    ("dock",      "与 Dock 条等高"),
-    ("dock-name", "与 Dock 等高 + 名字"),
+    ("auto",      "自适应网格 · 大格子 + 名字"),
+    ("dock-grid", "与 Dock 两倍等高 · 无字网格"),
+    ("dock",      "与 Dock 条等高 · 无字长条"),
+    ("dock-name", "与 Dock 条等高 · 带名字"),
 ]
 
 // ─── 配置模型 ──────────────────────────────────────────────
