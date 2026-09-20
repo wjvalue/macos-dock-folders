@@ -240,7 +240,8 @@ dg gui --rebuild    # 改过窗口源码后强制重编译
 
 **外观改动不会当场写 Dock。** 右侧预览是即时重算拼贴图标的，但要让 Dock 真变，
 还得点「应用到 Dock」。这个分界是故意的：7 种风格 × 13 种材质 × 4 种排列挨个试
-一遍，试错成本为零；满意了再落地。
+一遍，试错成本为零；满意了再落地。（点「应用到 Dock」时会顺手结束正在运行的面板
+进程 —— 不这么做的话，你点开看到的还是旧布局。）
 
 窗口本身也是 `swiftc` 编出来的单个二进制 + 手写 Info.plist，和分组启动器同一套
 构建方式 —— 不引入 Xcode 工程，也不引入任何第三方依赖。想改界面就改
@@ -495,7 +496,7 @@ Dock 支持把文件夹放进去（Stack），但它有个硬限制：
 | 弹出栏被 Dock 挡住 | 已修（历史 bug：`NSPanel.isFloatingPanel` 会把窗口层级压到 3）。重跑 `apply` 重新编译 |
 | 面板四角有直角块 | 已修：圆角得一路裁到窗口层（theme frame + 毛玻璃 `maskImage` + `invalidateShadow`），只给内容视图设圆角不够 |
 | 换了 material 但面板没变化 | ① `appearance` 必须设在毛玻璃视图上，只设 window 无效；② `bundle-stamp` 缓存跳过了重写 → `rm ~/Dock\ Groups/.cache/*.bundle-stamp` 再 `dg rebuild` |
-| 网格布局和设置的不一样 | ① 分组自己写了 `layout`，覆盖了全局 → 跑 `dg layout` 看每个分组的实际模式；② 同样的 `bundle-stamp` 缓存问题；③ `dg logs <组名>` 里 `panel: layout=[…] grid=…x…` 一行能直接对账 |
+| 改了布局 / 材质，点开面板还是老样子 | ① **最常见：旧的面板进程还在跑。** 启动器收起后要常驻一小段时间（否则 Dock 会报「已不能再打开」），而它的布局是**进程启动时**读进内存的，之后重建 bundle 也影响不到它 → `dg apply` / `dg rebuild` / `dg add` 都会自动结束旧进程，但手工改 bundle 不会。自查：`pgrep -lf DockGroupLauncher`，有残留就 `pkill -f DockGroupLauncher`；② 分组自己写了 `layout`，覆盖了全局 → 跑 `dg layout` 看每个分组的实际模式；③ `bundle-stamp` 缓存跳过了重建 → `rm ~/Dock\ Groups/.cache/*.bundle-stamp` 再 `dg rebuild`；④ `dg logs <组名>` 里 `panel: layout=[…] grid=…x…` 一行能直接对账 |
 | 图标没跟着文件夹内容变 | `dg rebuild` |
 | Dock 条目被系统丢弃 | `dg restore` 回滚，再手动把 App 拖回 Dock |
 | 想彻底撤销 | `dg restore` |

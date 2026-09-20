@@ -89,6 +89,22 @@ dg list / style / layout / open / test / logs / remove / clean / watch-install /
 > ③ 它是普通 App（有 Dock 图标，不设 `LSUIElement`），和每分组一个的分组启动器不是一回事，
 >    产物在 `~/Dock Groups/.apps/DockGroup.app`。
 
+> ⚠️ **改了布局或材质、点开面板却没变化？先怀疑「旧的面板进程还活着」。**
+> 启动器收起后要**常驻一小段时间**才退出（立刻退会让 Dock 报「应用程序已不能再打开」，
+> 见 `launcher/main.swift` 里 `kIdleSeconds` 的注释）。而它的面板几何、材质、成员清单
+> 都是**进程启动时**从 `Info.plist` 读进内存的 —— 之后把 bundle 重建十遍也影响不到
+> 那个已在跑的进程；点 Dock 图标时 LaunchServices 走 reopen，还是回到它。
+>
+> 判断：`pgrep -lf DockGroupLauncher`（有输出就是有残留）；清掉：`pkill -f DockGroupLauncher`。
+>
+> 2026-09-20 实测踩过：全局 layout 从 `dock` 改成 `auto`，`groups.json` 和
+> `AI.app/Contents/Info.plist` 里都已经是 `auto`，`apply` 也确实重建了 bundle，
+> 但点开面板仍是 242×69 的 dock 条 —— 同一个 cache 目录里「浏览器」组却是新的
+> 211×239，区别只在于它那个旧进程已经自己退出了。
+>
+> 现在 `apply` / `rebuild` / `add` / `del` 都会走 `kill_launchers()` 自动收拾干净，
+> 但**手工改 bundle、或直接改 Info.plist 不会**，那时要自己 `pkill`。
+
 ## 标准流程
 
 1. **读现状**：`dg list`，或 `defaults read com.apple.dock persistent-apps` + percent-decode。

@@ -325,6 +325,31 @@ def has_quarantine(path) -> bool:
     return p.exists() and "com.apple.quarantine" in quarantine_listing(p)
 
 
+def kill_launchers() -> bool:
+    """结束正在运行的启动器实例，返回是否真杀到了。
+
+    **为什么每次重建之后都必须做这一步**：启动器是常驻一小段时间的进程 ——
+    面板收起后还要活 kIdleSeconds 秒才退（见 launcher/main.swift 的注释：立刻退出
+    会让 Dock 报「应用程序"X"已不能再打开」）。而它的面板几何、材质、成员清单都是
+    **进程启动时**从 Info.plist 读进内存的，之后你就是把 bundle 重建十遍也影响不到
+    那个已经在跑的进程 —— 你点 Dock 图标时 LaunchServices 走的是 reopen，还是回到
+    它，于是面板维持旧样子。
+
+    实测踩过（2026-09-20，用户报「选了自适应网格后无反应」）：全局 layout 从 dock
+    改成 auto，groups.json 和 AI.app/Contents/Info.plist 里都已经是 auto，apply 也
+    确实重建了 bundle，但点开面板仍是 242×69 的 dock 条。同一个 cache 目录里
+    「浏览器」组却是新的 211×239 —— 区别只在于它那个旧进程已经自己退出了。
+
+    杀干净之后下次点击会启动新进程、读新 bundle。那 0.4 秒是为了等 LaunchServices
+    消化进程退出，否则紧接着点击可能撞上「已不能再打开」。
+    """
+    r = sh(["pkill", "-f", "DockGroupLauncher"])
+    if r.returncode == 0:
+        time.sleep(0.4)
+        return True
+    return False
+
+
 def strip_quarantine(path) -> bool:
     """清掉整棵目录树上的隔离属性，返回是否真的清过。
 
@@ -1822,6 +1847,8 @@ def cmd_apply(cfg, args):
     dock_sync(cfg, only=None, prune=not keep)
     after = len(dock_read().get("persistent-apps", []))
     print(f"\nDock 左侧 App 图标：{before} → {after}")
+    if kill_launchers():
+        print("  已结束正在运行的启动器 —— 下次点开面板才会用上新布局")
     for g in targets:
         pos = "左侧 App 区（%s 之后）" % Path(g["after"]).stem if g.get("after") \
             else ("分隔线右侧" if g.get("placement") == "right" else "左侧 App 区末尾")
@@ -2027,6 +2054,9 @@ def refresh_groups(cfg, names=None, quiet=False):
     if touched:
         CACHE.mkdir(parents=True, exist_ok=True)
         (CACHE / ".last-build").write_text(str(time.time()))
+        # 先杀启动器再重启 Dock：顺序反过来的话，重启完 Dock 又有一瞬间可能被点到，
+        # 那时旧进程还在，就会用旧布局画一次面板。
+        kill_launchers()
         sh(["killall", "Dock"])
         sh(["killall", "Finder"])
     if not quiet:

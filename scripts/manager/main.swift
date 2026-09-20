@@ -296,14 +296,27 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // 外观三项。改动都立刻落盘 groups.json —— 两个原因：
+    //   ① 预览图是交给引擎重新合成的（dg preview 读的是**文件里**的 style），
+    //      不先写文件就会「换了风格但预览纹丝不动」；
+    //   ② dirty 要立刻置起来，否则用户不知道还得点一下「应用到 Dock」。
+    // 注意落盘 ≠ 生效：Dock 上真正跑了什么由「应用到 Dock」决定。
+
     func setStyle(_ v: String) {
         style = v
+        save()
         preview()
     }
 
-    func setMaterial(_ v: String) { material = v }
+    func setMaterial(_ v: String) {
+        material = v
+        save()
+    }
 
-    func setLayout(_ v: String) { layout = v }
+    func setLayout(_ v: String) {
+        layout = v
+        save()
+    }
 
     // ── 跑引擎 ──
 
@@ -379,7 +392,10 @@ final class AppModel: ObservableObject {
 
     func applyToDock() {
         save()
-        Task { await run(["apply"]) }
+        Task {
+            await run(["apply"])
+            if !statusIsError { dirty = false }
+        }
     }
 
     func removeFromDock(_ name: String) {
@@ -713,11 +729,12 @@ struct Inspector: View {
             .padding(.top, 16)
 
             if model.dirty {
-                Text("外观改动还没写进 Dock")
+                Text("改动还没写进 Dock —— 点右下角「应用到 Dock」")
                     .font(.system(size: 11))
                     .foregroundStyle(.orange)
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Spacer(minLength: 12)
