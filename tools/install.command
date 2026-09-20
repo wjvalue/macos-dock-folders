@@ -2,7 +2,7 @@
 # dockgroup 一键安装。
 #
 # 双击就能跑（macOS 会用「终端」打开 .command 文件）。
-# 做三件事：清隔离属性 → 装 dg 短命令 → 体检。
+# 做四件事：清隔离属性 → 补齐 Pillow → 装 dg 短命令 → 体检。
 #
 # 为什么第一步是清隔离：从网络下载的 zip 解压出来，每个文件都带
 # com.apple.quarantine 标记。不清掉的话，后面生成的 .app 也会带这个标记，
@@ -25,7 +25,24 @@ else
 fi
 echo
 
-echo "② 安装 dg 短命令"
+echo "② 补齐 Pillow"
+# Pillow 不在 macOS 自带依赖里（见 README「安装」那张表）。缺了它后面所有命令
+# 都跑不动 —— 以前没这一步，新用户照文档 clone 下来第一次跑就报错，还以为
+# 是自己哪里弄错了。检查用 -s 吗？不用：这里要的就是「用户现在能不能跑」。
+if /usr/bin/python3 -c "import PIL" 2>/dev/null; then
+    echo "   已装：Pillow $(/usr/bin/python3 -c 'import PIL; print(PIL.__version__)' 2>/dev/null)"
+else
+    echo "   缺 Pillow，装到 /usr/bin/python3 的 user site …"
+    if /usr/bin/python3 -m pip install --user Pillow; then
+        echo "   ✅ 装好了"
+    else
+        echo "   ⚠️  自动安装没成功，请手动执行（国内网络可能要挂代理）："
+        echo "       /usr/bin/python3 -m pip install --user Pillow"
+    fi
+fi
+echo
+
+echo "③ 安装 dg 短命令"
 DG="$HOME/.local/bin/dg"
 if [ -f "$DG" ] && grep -q "dockgroup.py" "$DG" 2>/dev/null; then
     # 已经有了就绝不覆盖：用户手上那份可能改过路径、加过别名。
@@ -65,7 +82,7 @@ else
 fi
 echo
 
-echo "③ 依赖体检"
+echo "④ 依赖体检"
 /usr/bin/python3 "$ROOT/scripts/dockgroup.py" doctor
 echo
 

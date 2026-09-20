@@ -220,7 +220,14 @@ App   ：内容占画布 86.5%（系统归一化到标准 App 图标框）
 - **macOS 26 移除了 `/System/Library/Fonts/PingFang.ttc`**；
   中文渲染改用 `/System/Library/Fonts/Hiragino Sans GB.ttc`（index 2 = W6）。
   PIL 加载 `.ttc` 要传 `index`，否则可能拿到不含中文的 face。
-- **托管 Python 可能没有 Pillow**。用 `/usr/bin/python3`（系统自带 Pillow 11.x）。
+- **Pillow 不是系统自带的**（2026-09-20 实测）。判据：
+  `/usr/bin/python3 -s -c "import PIL"` → `ModuleNotFoundError`（`-s` 禁掉 user site），
+  而 `-s` 去掉就能跑 —— 说明它来自 `pip install --user Pillow`，落在
+  `/usr/bin/python3` 的 user site（`~/Library/Python/3.9/lib/python/site-packages`）。
+  两个后果：① 新机器必须先装 Pillow，否则第一次跑就死在 import；
+  ② 解释器写死 `/usr/bin/python3`，换成 Homebrew / venv 的 Python 读不到这份包。
+  踩过的坑：报错文案原本写「请用 /usr/bin/python3 运行（系统自带 PIL）」，
+  而用户用的正是这个解释器 —— 等于什么都没说，还会把人往错方向带。
 
 ---
 

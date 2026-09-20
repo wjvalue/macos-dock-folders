@@ -90,7 +90,18 @@ __version__ = "1.0.0"
 try:
     from PIL import Image, ImageDraw, ImageFilter, ImageFont
 except ImportError:
-    sys.exit("需要 Pillow：请用 /usr/bin/python3 运行本脚本（系统自带 PIL）")
+    # 这条文案以前写的是「请用 /usr/bin/python3 运行（系统自带 PIL）」——错的。
+    # Pillow 不在 macOS 自带依赖里，得用户自己 pip 装；而报错时用户用的
+    # 恰恰就是 /usr/bin/python3，被告知「你解释器用错了」只会更懵。
+    sys.exit(
+        "缺少 Pillow（PIL）—— 它不在 macOS 自带依赖里，需要自己装：\n"
+        "\n"
+        "    /usr/bin/python3 -m pip install --user Pillow\n"
+        "\n"
+        f"当前解释器：{sys.executable}\n"
+        "装完直接重跑即可。必须装给 /usr/bin/python3：Pillow 会落到它的 user site\n"
+        "目录，换成 Homebrew / venv 的 Python 读不到这份包。"
+    )
 
 HOME = Path.home()
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -1717,9 +1728,18 @@ def cmd_doctor(cfg, args):
     print(f"  配置文件 : {CONFIG_PATH if CONFIG_PATH.exists() else '（还没建，跑 init）'}")
     print(f"  依赖结论 : {'齐全，可以用了' if allok else '有缺失，见下'}")
     if not allok:
-        print("\n  swiftc / codesign / iconutil / sips 都随 Xcode Command Line Tools 提供：")
-        print("    xcode-select --install")
-        print("  只想用右侧文件夹模式的话，缺 swiftc 也能跑（placement 设成 right）。")
+        # Pillow 和 CLT 是两条独立的路，缺哪个给哪个的命令。
+        # 以前不分情况一律提示 xcode-select —— 只缺 Pillow 的人照着装完 CLT
+        # 回来还是报错，白折腾一轮。
+        missing = {tool for tool, _, good in checks if not good}
+        if "Pillow" in missing:
+            print("\n  Pillow 不在 macOS 自带依赖里，需要单独装：")
+            print("    /usr/bin/python3 -m pip install --user Pillow")
+            print("  必须装给 /usr/bin/python3（本工具固定用它，别的解释器读不到）。")
+        if missing & {"swiftc", "codesign", "iconutil", "sips"}:
+            print("\n  swiftc / codesign / iconutil / sips 都随 Xcode Command Line Tools 提供：")
+            print("    xcode-select --install")
+            print("  只想用右侧文件夹模式的话，缺 swiftc 也能跑（placement 设成 right）。")
 
     # ── 分发与签名 ──
     # 这一节存在的理由：签名身份和隔离属性都属于「本机自测一路绿灯、发出去才炸」

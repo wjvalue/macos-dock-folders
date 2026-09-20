@@ -433,7 +433,11 @@ dg list / style / layout / open / test / logs / remove / clean / watch-install /
 
 ## 环境须知
 
-- 用 `/usr/bin/python3`（系统自带 Pillow）。托管 Python 可能**没有** PIL。
+- 用 `/usr/bin/python3`。**Pillow 不是系统自带的**（2026-09-20 实测：加 `-s` 禁掉
+  user site 后 `import PIL` 直接 ModuleNotFoundError），得先
+  `/usr/bin/python3 -m pip install --user Pillow` 装一次。装进的是 **CLT 那个
+  Python 的 user site**（`~/Library/Python/3.9/lib/python/site-packages`），
+  所以 Homebrew / venv / 托管 Python 都读不到 —— 解释器必须写死，不能换。
 - macOS 26 已移除 `/System/Library/Fonts/PingFang.ttc`；
   中文渲染改用 `/System/Library/Fonts/Hiragino Sans GB.ttc`（index 2 = W6）。
 - **本机常见权限拦截**（会显著影响方案设计）：

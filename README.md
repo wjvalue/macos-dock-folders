@@ -48,9 +48,15 @@ iPhone 早就用文件夹解决了，而 macOS **从来没把这个交互搬过�
 
 ## 安装
 
-依赖都是 macOS 自带的东西：`/usr/bin/python3`（含 Pillow）、`osascript`，
-以及 [Xcode Command Line Tools](https://developer.apple.com/xcode/resources/) 提供的
-`swiftc` / `codesign` / `iconutil` / `sips`。
+依赖就下面这些。**Pillow 不在 macOS 自带依赖里**，需要单独装一次 ——
+也是唯一一个得手动补的（`tools/install.command` 会发现缺了并顺手装上）。
+
+| 依赖 | 用来干什么 | 怎么来 |
+|---|---|---|
+| `/usr/bin/python3` | 跑脚本本身 | 随 Xcode Command Line Tools |
+| **Pillow** | 合成分组图标的拼贴图 | `/usr/bin/python3 -m pip install --user Pillow` |
+| `swiftc` `codesign` `iconutil` `sips` | 编译启动器 App、打包 `.icns` | 随 Xcode Command Line Tools |
+| `osascript` | 调 AppKit / Foundation | 系统自带 |
 
 ```bash
 git clone https://github.com/wjvalue/macos-dock-folders.git
@@ -63,8 +69,8 @@ cd macos-dock-folders
 缺 Command Line Tools 的话：`xcode-select --install`。
 
 装一个短命令 `dg` —— 会自动把当前路径写进去，之后直接敲 `dg` 就行。
-**最省事的是双击 `tools/install.command`**：装 `dg` + 清隔离标记 + 体检一条龙，
-而且它**不会覆盖**你已经装过的 `dg`。手动装也就三行：
+**最省事的是双击 `tools/install.command`**：补 Pillow + 装 `dg` + 清隔离标记 + 体检
+一条龙，而且它**不会覆盖**你已经装过的 `dg`。手动装也就三行：
 
 ```bash
 mkdir -p ~/.local/bin
@@ -75,8 +81,9 @@ chmod +x ~/.local/bin/dg
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-> 脚本里写死 `/usr/bin/python3` 是有意的：**只有系统自带的 Python 才带 Pillow**，
-> 用 `env python3` 可能解析到不带 Pillow 的解释器。
+> 脚本里写死 `/usr/bin/python3` 是有意的：Pillow 装进的是**它**的 user site
+> （`~/Library/Python/3.9/lib/python/site-packages`）。用 `env python3` 可能解析到
+> Homebrew / conda 的解释器，那些读不到这份 Pillow，于是照样报「缺少 Pillow」。
 
 ### 打不开？被 Gatekeeper 拦住了？
 

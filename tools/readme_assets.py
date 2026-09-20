@@ -17,7 +17,8 @@ icon 58 / pad 16 / gap 7 / radius 25 / label 11pt）。
 用法：
     /usr/bin/python3 tools/readme_assets.py
 
-依赖：系统自带 `/usr/bin/python3`（含 Pillow）、SF Pro 字体（SFNS.ttf）。
+依赖：`/usr/bin/python3` + 装进它 user site 的 Pillow（`pip install --user Pillow`，
+**不是系统自带**）、SF Pro 字体（SFNS.ttf）。
 注意：图上的文字一律用英文 —— SF Pro 没有中文字形，中文会渲染成方块。
 """
 import sys
