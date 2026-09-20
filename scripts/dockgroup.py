@@ -173,6 +173,110 @@ MATERIALS = {
     "fullScreenUI":      "全屏 UI 材质",
 }
 
+# 弹出面板的网格布局。
+#
+# 默认是 row（长条）—— 这是最早的行为，也是观感上更贴合 Dock 的一条横带。
+# auto（按应用数排四宫格 / 九宫格）是**可选项**，用 `dg layout --all auto` 开。
+#
+# dock / dock-name 是「和 Dock 条等高」的两档（2026-09-20 加）：
+# 现场量出来 Dock 条高 72pt，而原来的长条面板高 132pt，弹出来比 Dock 高出一大截。
+#   dock       面板 = Dock 条高（72），图标撑满、不画名字（悬停出系统提示）
+#   dock-name  面板 = Dock 条高 + 8（80），图标缩到 42 = Dock 图标真实大小，名字照常显示
+#
+# 历史：列数原来是 `min(kMaxCols, n)`，n ≤ 4 时列数恒等于 n、行数恒为 1 —— 所以
+# 3~4 个 App 的分组点开永远只有一条长条。现在 row 模式字面上就是这个旧行为，
+# auto 模式才按应用数推导列数。
+DEFAULT_LAYOUT = "row"
+LAYOUTS = {
+    "row":  "长条（当前默认）。能铺一行就铺一行，超过 4 个按 4 列换行",
+    "auto": "自适应网格。1→1×1，2→2×1，3~4→2×2 四宫格，"
+            "5~6→3×2，7~9→3×3 九宫格，≥10→4 列",
+    "dock": "和 Dock 条等高（72）。图标 44 = Dock 图标同大，不画名字（悬停出系统提示）；"
+            "4 个 App 是 242×72，弹在 Dock 上像同一条栏的延续",
+    "dock-name": "和 Dock 条等高，另让 8pt 给名字（80）。图标 42 = Dock 图标真实大小；"
+                 "4 个 App 是 378×80",
+    "2":    "固定 2 列",
+    "3":    "固定 3 列",
+    "4":    "固定 4 列",
+}
+
+# 列数上限，必须和 main.swift 的 kMaxCols 保持一致。
+MAX_COLS = 4
+
+# 格子尺寸，必须和 main.swift 的 kCellW / kCellH / kCellWGrid 保持一致。
+CELL_W_ROW, CELL_H, CELL_W_GRID, CELL_PAD, CELL_GAP = 86, 100, 100, 16, 7
+
+# Dock 条默认高度 / dock 系的格子内边距与间距，必须和 main.swift 的
+# dockBarHeight() / geometry(for:) 一致。Swift 那侧是按「屏幕可用区 - 8」实时算的
+# （本机 = 72）；这里拿不到屏幕尺寸，只能用同一个默认值做**预览**估算 ——
+# 用户在 Dock 设置里改过图标大小的话，这里显示的尺寸会和真机略有出入。
+#
+# dock 的留白取 14：图标 = 72 - 28 = 44，正好和 Dock 图标（实测 42.5）同档，
+# 上下留白也和 Dock 条自己的节奏一样，所以两者能连成一条。
+DOCK_BAR_DEFAULT = 72
+DOCK_PAD, DOCK_GAP = 14, 6
+DOCK_NAME_PAD = 8               # dock-name 另算：要让出 8pt 给名字
+
+
+def panel_geom(mode):
+    """该布局的 (格子宽, 格子高, 内边距, 间距)。
+
+    ⚠️ 必须和 main.swift 的 geometry(for:) 一一对应 —— 改一边就要改另一边。
+
+    长条模式 86 宽（横向排开更紧凑）；网格模式 100 宽，与格子高度相等 —— 格子方了，
+    n×n 的面板才是正方形。之前网格也沿用 86，2×2 就成了 211×239 的竖长方形。
+    """
+    m = str(mode).strip().lower()
+    if m in ("dock", "dock-name"):
+        if m == "dock":
+            icon = DOCK_BAR_DEFAULT - DOCK_PAD * 2          # 44 = Dock 图标同档
+            return icon + 8, icon, DOCK_PAD, DOCK_GAP
+        return (CELL_W_ROW, DOCK_BAR_DEFAULT - DOCK_NAME_PAD * 2 + 8,
+                DOCK_NAME_PAD, DOCK_GAP)
+    return (CELL_W_ROW if m == "row" else CELL_W_GRID), CELL_H, CELL_PAD, CELL_GAP
+
+
+def cell_w_for(mode):
+    """该布局的格子宽度。只是 panel_geom() 的便捷读法，保留给 `tools/readme_assets.py`
+    这类老调用方 —— 几何规则只有 panel_geom() 一份，别在这儿再写一套。"""
+    return panel_geom(mode)[0]
+
+
+def layout_grid(mode, n):
+    """按布局模式算 (列数, 行数)。
+
+    ⚠️ 这段必须和 main.swift 的 columns(for:layout:) 逐条对应 —— 改一边就要改另一边。
+    这里只用于在 `dg layout` 里预览「这个分组会变成几宫格」，真正画面板的是 Swift 那侧。
+    """
+    n = max(int(n), 1)
+    mode = str(mode).strip().lower()
+    if mode.isdigit() and int(mode) > 0:
+        cols = min(int(mode), n)
+    elif mode in ("row", "dock", "dock-name"):
+        cols = min(MAX_COLS, n)             # dock 系共用长条的单行行为
+    else:                               # auto，也是未知取值的兜底
+        if n <= 2:
+            cols = n                    # 1→1×1，2→2×1
+        elif n <= 4:
+            cols = 2                    # 四宫格
+        elif n <= 9:
+            cols = 3                    # 3×2 或九宫格
+        else:
+            cols = MAX_COLS
+        cols = min(min(cols, n), MAX_COLS)
+    return max(cols, 1), -(-n // max(cols, 1))
+
+
+def panel_size(mode, n):
+    """按布局模式算面板的 (宽, 高)。
+
+    ⚠️ 和 main.swift 的 PanelGeometry.panelSize(cols:rows:) 是同一套算法。
+    """
+    cols, rows = layout_grid(mode, n)
+    cw, ch, pad, gap = panel_geom(mode)
+    return (pad * 2 + cols * cw + (cols - 1) * gap,
+            pad * 2 + rows * ch + (rows - 1) * gap)
+
 # 预览图字体（macOS 26 已移除 PingFang.ttc）
 FONT_CANDIDATES = [
     ("/System/Library/Fonts/Hiragino Sans GB.ttc", 2),   # W6
@@ -629,7 +733,7 @@ def launcher_binary(force=False) -> Path:
 
 
 def build_launcher_app(g, style=DEFAULT_STYLE, force=False,
-                       material=DEFAULT_MATERIAL, seed=None):
+                       material=DEFAULT_MATERIAL, layout=DEFAULT_LAYOUT, seed=None):
     """构建启动器 App：拼贴图标 + Swift 二进制 + Info.plist。
 
     返回 (app 路径, 有效 App 列表, 缺失列表)。内容运行时从分组文件夹现读，
@@ -664,6 +768,9 @@ def build_launcher_app(g, style=DEFAULT_STYLE, force=False,
         "DockGroupName": name,
         "DockGroupLogDir": str(CACHE),
         "DockGroupMaterial": material,
+        # 网格布局模式（auto / row / 数字）。启动器按它决定列数，
+        # 见 main.swift 的 columns(for:layout:)。进内容摘要 → 改了会重写 bundle。
+        "DockGroupLayout": str(layout),
         # 启动器收到拖放后要回调本脚本；GUI 进程的 PATH 只有 /usr/bin:/bin，
         # 不能指望 dg 在 PATH 里，直接把绝对路径塞进去。
         "DockGroupScript": str(SCRIPT_DIR / "dockgroup.py"),
@@ -1497,7 +1604,8 @@ def cmd_apply(cfg, args):
             dest, _, ok, missing = build_group(g, style=style)
         else:
             dest, ok, missing = build_launcher_app(g, style=style,
-                                                   material=group_material(cfg, g))
+                                                   material=group_material(cfg, g),
+                                                   layout=group_layout(cfg, g))
         print(f"  ✓ {g['name']} → {dest}（{len(ok)} 个 App）")
         if missing:
             print(f"       ⚠ 跳过 {len(missing)} 个不存在的 App")
@@ -1593,6 +1701,97 @@ def group_material(cfg, g):
     return g.get("material") or cfg.get("material", DEFAULT_MATERIAL)
 
 
+def group_layout(cfg, g):
+    """取某个分组该用的网格布局模式。
+
+    和 group_material() 同一套「分组覆盖全局」的规则：分组自己写了 layout 就用
+    分组的，没写才退回顶层默认。这样既能全局定基调（dg layout --all row 一键回到
+    旧的长条样式），也能给个别分组单独开网格、其余保持长条。
+    """
+    return str(g.get("layout") or cfg.get("layout", DEFAULT_LAYOUT))
+
+
+def group_app_count(g):
+    """数分组文件夹里的有效条目数。
+
+    过滤规则和启动器 main.swift 的 readEntries() 对齐：跳过 .DS_Store 之类的
+    隐藏文件，以及带 \\r 的自定义图标文件（Icon\\r）——它不是 App，不占格子。
+    """
+    folder = BASE / g["name"]
+    if not folder.is_dir():
+        return None
+    return sum(1 for x in folder.iterdir()
+               if not x.name.startswith(".") and "\r" not in x.name)
+
+
+def cmd_layout(cfg, args):
+    """换弹出面板的网格布局（长条 / 自适应网格 / 和 Dock 条等高）。改完重建图标并重启 Dock。
+
+    不带参数 = 看当前用了什么 + 每个分组会排成几宫格。
+    """
+    rest = [a for a in args if not a.startswith("--")]
+    all_ = "--all" in args
+    if not rest:
+        print(f"默认布局：{cfg.get('layout', DEFAULT_LAYOUT)}")
+        for g in cfg["groups"]:
+            own = g.get("layout") or "（跟随默认）"
+            n = group_app_count(g)
+            if n is None:
+                print(f"  {g['name']:<12} {own:<14} 文件夹不存在")
+                continue
+            cols, rows = layout_grid(group_layout(cfg, g), n)
+            pw, ph = panel_size(group_layout(cfg, g), n)
+            print(f"  {g['name']:<12} {own:<14} {n:>2} 个 App → {cols}×{rows}  {pw}×{ph}")
+        print("\n可选布局：")
+        for k, desc in LAYOUTS.items():
+            print(f"  {k:<10} {desc}")
+        print("\n用法：")
+        print("  dg layout 组名 row        只让这个分组保持原来的长条样式")
+        print("  dg layout 组名 dock       改成和 Dock 条等高（图标撑满、不显示名字）")
+        print("  dg layout 组名 dock-name  和 Dock 条等高 + 保留名字（比 Dock 高 8pt）")
+        print("  dg layout --all auto      全部改成自适应网格")
+        print("  dg layout 组名 default    该分组退回全局默认")
+        return
+
+    if all_:
+        mode = rest[0]
+    elif len(rest) >= 2:
+        mode = rest[1]
+    else:
+        sys.exit("用法：dg layout <组名> <模式>   或   dg layout --all <模式>\n"
+                 "跑 `dg layout` 看不带参数的用法和布局清单")
+
+    if mode != "default" and mode not in LAYOUTS:
+        sys.exit(f"没有「{mode}」这个布局。可选：\n  " + "\n  ".join(LAYOUTS))
+
+    if all_:
+        if mode == "default":
+            cfg.pop("layout", None)
+        else:
+            cfg["layout"] = mode
+        for g in cfg["groups"]:
+            g.pop("layout", None)
+        save_config(cfg)
+        names = [g["name"] for g in cfg["groups"]]
+        print(f"全部 {len(names)} 个分组 → {mode}")
+    else:
+        g = find_group(cfg, rest[0])
+        if not g:
+            sys.exit(f"没有分组「{rest[0]}」")
+        if mode == "default":
+            g.pop("layout", None)
+        else:
+            g["layout"] = mode
+        save_config(cfg)
+        names = [g["name"]]
+        print(f"「{g['name']}」→ {mode}")
+
+    touched = refresh_groups(cfg, set(names), quiet=True)
+    print(f"已更新：{', '.join(touched) if touched else '无'}（Dock 已重启）")
+    if not touched:
+        print("提示：这些分组还没有生成图标，跑 `dg apply` 才会写进 Dock")
+
+
 def refresh_groups(cfg, names=None, quiet=False):
     """重建指定分组的图标与启动器，然后重启 Dock。names=None = 全部。
 
@@ -1611,7 +1810,7 @@ def refresh_groups(cfg, names=None, quiet=False):
                 build_group(g, style=style, seed=False)
             else:
                 build_launcher_app(g, style=style, material=group_material(cfg, g),
-                                   seed=False)
+                                   layout=group_layout(cfg, g), seed=False)
             touched.append(g["name"])
         except SystemExit as e:
             skipped.append(str(e))
@@ -1905,7 +2104,7 @@ def main():
         "doctor": cmd_doctor, "init": cmd_init, "new": cmd_new,
         "add": cmd_add, "del": cmd_del, "rm": cmd_del,
         "list": cmd_list, "preview": cmd_preview, "apply": cmd_apply,
-        "rebuild": cmd_rebuild, "style": cmd_style,
+        "rebuild": cmd_rebuild, "style": cmd_style, "layout": cmd_layout,
         "open": cmd_open, "test": cmd_test,
         "logs": cmd_logs, "remove": cmd_remove, "clean": cmd_clean,
         "watch-install": cmd_watch_install,

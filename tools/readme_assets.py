@@ -9,8 +9,10 @@ README 里的配图需要统一的背景、留白、字体和光影 —— 逐�
 
 这个脚本只替换「舞台」：App 图标是真实的（走 dockgroup 的图标提取），
 拼贴图标走的是 `scripts/dockgroup.py` 里同一份 `make_mosaic()`，
-面板几何取自 `scripts/launcher/main.swift` 的常量
-（cell 86×100 / icon 58 / pad 16 / gap 7 / radius 25 / label 11pt）。
+面板几何取自 `scripts/launcher/main.swift` 的常量，并由下面那条 assert
+和 `scripts/dockgroup.py` 逐项核对（cell 长条 86×100 / 网格 100×100 /
+icon 58 / pad 16 / gap 7 / radius 25 / label 11pt）。
+网格列数走 `dg.layout_grid()` —— 和启动器是同一套规则，改了代码图也会跟着变。
 
 用法：
     /usr/bin/python3 tools/readme_assets.py
@@ -41,7 +43,14 @@ PANEL_MENU = (247, 248, 250)
 FONT_PATH = "/System/Library/Fonts/SFNS.ttf"
 
 # 真实面板几何（pt），对齐 scripts/launcher/main.swift
+# P_CW 是「长条模式」的格子宽。网格模式用 dg.cell_w_for() 取 100 —— 与格子高相等，
+# 这样 2×2 / 3×3 的面板才是正方形。
 P_PAD, P_CW, P_CH, P_GAP, P_RADIUS, P_ICON, P_LABEL = 16, 86, 100, 7, 25, 58, 11
+
+# 常量和 dockgroup.py 里那份必须一致，对不上就说明有人只改了一边。
+assert (P_CW, P_CH, P_PAD, P_GAP) == (
+    dg.CELL_W_ROW, dg.CELL_H, dg.CELL_PAD, dg.CELL_GAP), \
+    "readme_assets 的面板几何和 dockgroup.py 对不上了 —— 先把两边常量统一"
 # 真实 Dock 几何（pt）
 D_ICON, D_GAP, D_PADX, D_BAR_H, D_RADIUS = 58, 17, 20, 80, 22
 
@@ -225,20 +234,33 @@ def dock_strip(canvas, y_top, items, tile_pos, tile_style, tile_keys,
 
 
 # ── 弹出面板（直接画在最终画布上）─────────────────────────────────
-def panel_box(keys, cols, cx, top_y):
+def panel_size(keys, cols, cell_w=P_CW):
+    """面板的 (宽, 高)。
+
+    列数由调用者按 dg.layout_grid() 算好、格子宽按 dg.cell_w_for() 取 ——
+    README 配图和启动器必须用同一套规则，否则图里的网格和用户实际看到的对不上。
+    """
     rows, c = ceil(len(keys) / cols), min(len(keys), cols)
-    pw = c * q(P_CW) + (c - 1) * q(P_GAP) + 2 * q(P_PAD)
+    pw = c * q(cell_w) + (c - 1) * q(P_GAP) + 2 * q(P_PAD)
     ph = rows * q(P_CH) + (rows - 1) * q(P_GAP) + 2 * q(P_PAD)
+    return pw, ph
+
+
+def panel_box(keys, cols, cx, top_y, cell_w=P_CW):
+    pw, ph = panel_size(keys, cols, cell_w)
     return (cx - pw // 2, top_y, cx + pw // 2, top_y + ph)
 
 
 def draw_panel(canvas, keys, names, top_y, material="hud", cols=4, hover=None,
-               cx=None):
-    """按 main.swift 的几何在画布上画一个面板，返回面板 box。"""
+               cx=None, cell_w=P_CW):
+    """按 main.swift 的几何在画布上画一个面板，返回面板 box。
+
+    cell_w 传 dg.cell_w_for(mode)：长条 86，网格 100（正方形格子）。
+    """
     cx = canvas.width // 2 if cx is None else cx
-    box = panel_box(keys, cols, cx, top_y)
+    box = panel_box(keys, cols, cx, top_y, cell_w)
     pw, ph = box[2] - box[0], box[3] - box[1]
-    pad, gap = q(P_PAD), q(P_GAP)
+    pad, gap, cw = q(P_PAD), q(P_GAP), q(cell_w)
 
     drop_shadow(canvas, box, q(P_RADIUS), q(11), q(4), 0.26)
     dark = material in ("hud", "toolTip")
@@ -251,22 +273,22 @@ def draw_panel(canvas, keys, names, top_y, material="hud", cols=4, hover=None,
     for i, key in enumerate(keys):
         r, col = divmod(i, cols)
         in_row = min(cols, n - r * cols)
-        row_w = in_row * q(P_CW) + (in_row - 1) * gap
+        row_w = in_row * cw + (in_row - 1) * gap
         row_x = box[0] + pad + (pw - 2 * pad - row_w) // 2
-        cell_x = row_x + col * (q(P_CW) + gap)
+        cell_x = row_x + col * (cw + gap)
         cell_y = box[1] + pad + r * (q(P_CH) + gap)
         if hover == i:
             d.rounded_rectangle((cell_x + q(3), cell_y + q(4),
-                                 cell_x + q(P_CW) - q(3), cell_y + q(P_CH) - q(4)),
+                                 cell_x + cw - q(3), cell_y + q(P_CH) - q(4)),
                                 radius=q(15), fill=(255, 255, 255, 38))
-        paste_icon(canvas, app_icon(key, ic), (cell_x + (q(P_CW) - ic) // 2,
-                                               cell_y + q(12)),
+        paste_icon(canvas, app_icon(key, ic), (cell_x + (cw - ic) // 2,
+                                              cell_y + q(12)),
                    shadow=(q(1.5), q(4), 0.30))
         lf = font(q(P_LABEL), weight=500 if hover == i else 400)
         tone = (255, 255, 255, int(255 * (0.98 if hover == i else 0.78))) if dark \
             else (0, 0, 0, int(255 * (0.92 if hover == i else 0.70)))
-        d.text((cell_x + q(P_CW) // 2, cell_y + q(79)),
-               fit(d, names[i], lf, q(P_CW) - q(10)), font=lf, fill=tone, anchor="ma")
+        d.text((cell_x + cw // 2, cell_y + q(79)),
+               fit(d, names[i], lf, cw - q(10)), font=lf, fill=tone, anchor="ma")
     return box
 
 
@@ -282,7 +304,9 @@ def fig_hero():
     bar_y = H - q(28) - q(D_BAR_H)
     box, tile_cx, _ = dock_strip(img, bar_y, items, 3, "graphite", GROUP,
                                  highlight=True)
-    draw_panel(img, GROUP, GROUP_NAMES, box[1] - q(16) - q(132),
+    # 面板高度按常量算，别写死 —— 布局常量一改图就跟着变
+    ph = panel_size(GROUP, dg.layout_grid("row", len(GROUP))[0])[1]
+    draw_panel(img, GROUP, GROUP_NAMES, box[1] - q(16) - ph,
                material="hud", cx=tile_cx)
     save(img, "hero.png")
 
@@ -389,16 +413,48 @@ def fig_panel_materials():
 
 
 def fig_panel_grid():
-    """多行排列：4 列排满自动换行，最后一行独立居中。"""
-    W, H = q(840), q(330)
+    """两种布局并列：默认的长条（row）和可选的网格（auto）。
+
+    列数走 dg.layout_grid()、格子宽走 dg.cell_w_for() —— 和启动器同一套规则，
+    改了 main.swift 的常量或列数逻辑，这张图会跟着变。
+    """
+    W, H = q(840), q(478)
     img = background(W, H)
     d = ImageDraw.Draw(img)
 
-    seven = ["calendar", "notes", "reminders", "calculator", "mail", "maps", "photos"]
-    names = ["Calendar", "Notes", "Reminders", "Calculator", "Mail", "Maps", "Photos"]
-    d.text((W // 2, q(30)), "4 per row · extra icons wrap · each row centres itself",
+    four = ["calendar", "notes", "reminders", "calculator"]
+    four_names = ["Calendar", "Notes", "Reminders", "Calculator"]
+    nine = ["safari", "chrome", "mail", "messages", "photos",
+            "music", "maps", "notes", "settings"]
+    nine_names = ["Safari", "Chrome", "Mail", "Messages", "Photos",
+                  "Music", "Maps", "Notes", "Settings"]
+
+    d.text((W // 2, q(24)),
+           "row keeps the strip · auto gives a square grid · each row centres itself",
            font=font(q(12), weight=600), fill=INK_2, anchor="mm")
-    draw_panel(img, seven, names, q(62), material="hud", cols=4)
+
+    # 一条浅色 Dock 条：两块面板都是从 Dock 上弹出来的，底部对齐
+    bar_top = q(412)
+    d.rounded_rectangle((q(30), bar_top, W - q(30), bar_top + q(20)),
+                        radius=q(10), fill=(214, 220, 232, 210))
+
+    layouts = (
+        ("row",  four, four_names, dg.cell_w_for("row"),  q(30), False),
+        ("auto", nine, nine_names, dg.cell_w_for("auto"), W - q(30), True),
+    )
+    labels = []
+    for mode, keys, names, cw, edge, right_align in layouts:
+        cols, rows = dg.layout_grid(mode, len(keys))
+        pw, ph = panel_size(keys, cols, cw)
+        cx = edge + pw // 2 if not right_align else edge - pw // 2
+        draw_panel(img, keys, names, bar_top - ph, material="hud",
+                   cols=cols, cx=cx, cell_w=cw)
+        tag = "row · default" if mode == "row" else "auto · optional"
+        labels.append((cx, f"{tag} — {len(keys)} apps · {pw // S}×{ph // S}"))
+
+    for cx, text in labels:
+        d.text((cx, q(452)), text, font=font(q(12), weight=600),
+               fill=INK_2, anchor="mm")
     save(img, "panel-grid.png")
 
 

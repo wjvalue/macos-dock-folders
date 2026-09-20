@@ -45,7 +45,7 @@ dg del  AI "App3"       # 从分组删 App（只删别名；真实 App 会拒绝
 dg preview [组名]       # 只合成图标预览，不动 Dock —— 改前必跑
 dg apply   [组名]       # 生成并写入 Dock
 dg rebuild              # 全部重新生成图标并重启 Dock
-dg list / open / test / logs / remove / clean / watch-install / restore
+dg list / style / layout / open / test / logs / remove / clean / watch-install / restore
 ```
 
 > **交互模式（用户不想敲名字时）**：`dg add` / `dg new` **不带参数**直接回车，
@@ -168,8 +168,11 @@ dg list / open / test / logs / remove / clean / watch-install / restore
     - 每格加深灰圆角底块 + 描边 → 像一张表格，视觉很重 ❌
     - 每格加白色磨砂底块 → 像一排白瓷片，与浅色玻璃糊在一起 ❌
     - **不加底块，只有图标 + 标签** → 和原生 Dock Stack 一致，最干净 ✅
-    - 尺寸：图标 64、格子 96×104、内边距 20、间距 10。
+    - 尺寸（**以 `main.swift` 顶部常量为准**）：图标 `kIcon 58`、格子高 `kCellH 100`、
+      内边距 `kPad 16`、间距 `kGap 7`。格子**宽度按布局分叉**：长条 `kCellW 86`、
+      网格 `kCellWGrid 100`（网格要正方形，见第 21 条）。
       **格子别收到 80** —— 「DSH Desktop」会被截成「DSH Deskt...」。
+      超长名字（`Numbers Creator Studio`、`Google Chrome`）在两种宽度下都会截断。
     - 换行时**每行单独居中**：最后一行不满还左对齐会明显歪。
     - 悬停高亮靠 `ItemView` 的 layer 圆角底（浅色模式淡黑、深色模式淡白），
       不要把底块画成常显的。
@@ -293,9 +296,74 @@ dg list / open / test / logs / remove / clean / watch-install / restore
       都在 Info.plist 里，**二进制与分组无关**。现在一份编译产物给所有分组共用，
       rebuild 从「编译 N 次」变成「编译 1 次」（3 个分组：20s → 6.4s）。
     - 排查入口：面板每次构建会往 `.cache/<组名>.events.log` 写一行
-      `panel: material=[hud] dark=true window=NSAppearanceNameAqua`，`ShineView`
-      首次绘制写 `shine: dark=true appearance=DarkAqua`。面板发白时先看这两行，
-      能立刻区分「材质没传对」「外观没跟上」和「二进制压根没换」。
+      `panel: layout=[auto] entries=4 grid=2x2 size=211x239 material=[hud] dark=true
+      window=NSAppearanceNameAqua`，`ShineView` 首次绘制写
+      `shine: dark=true appearance=DarkAqua`。面板发白先看 `material`/`window`，
+      网格不对先看 `layout`/`grid`/`size` —— 一行就能区分「配置没传进来」
+      「列数算错」「材质没传对」「外观没跟上」和「二进制压根没换」。
+
+21. **面板排列：默认长条，网格是可选项**（2026-09-20 定，用户直接反馈促成的）：
+    - 起因：用户说「点击后只显示长条形的框」，想要手机那种四宫格 / 九宫格。
+      根因是列数写成 `let cols = min(kMaxCols, n)`（`kMaxCols = 4`）——
+      **n ≤ 4 时 cols 恒等于 n、rows 恒为 1**，换行代码（rows / 末行居中）早就写好了
+      但永远触发不到。实测三个分组（4/4/3 个 App）点开全是单行长条。
+    - 改完我先上了 `auto` 当默认，用户看了实机又要求**改回长条当默认**，理由是
+      「四宫格都不像正方形，和手机对比感觉不太美观」。所以最终形态是：
+      **`row` = 默认**（字面上就是原来的 `min(kMaxCols, n)`，长条观感一字不变）、
+      **`auto` / 数字 = 可选项**，用 `dg layout --all auto` 才开。
+    - `auto` 规则：1→1×1，2→2×1，**3~4→2×2 四宫格**，5~6→3×2，
+      **7~9→3×3 九宫格**，≥10→按 `kMaxCols` 换行兜底。
+      **1~2 个故意不用 2×2**：容器 239pt 高而只装 1~2 个图标，下半截空着像没加载完。
+    - ⚠️ **「不像正方形」的修法是几何按模式分叉**：
+      - 图标 `y = H - 12 - 58`、标签 `y = 10` 高 15，**都从格子底部量** →
+        `kCellH` 最小 = 25+58+12 = **95，压不下去**。格子 86×100 本是竖长方形，
+        2×2 面板必然 211×239，就是用户说的「不像正方形」。
+      - 所以 `kCellWGrid = 100`（**必须等于 `kCellH`**）：`geometry(for:)` 里
+        长条模式用 `kCellW 86`、网格模式用 `kCellWGrid 100` →
+        2×2 = 239×239、3×3 = 346×346，都是正方形。
+      - 长条模式保持 86 不动 —— 用户明确要「保留原本长条式」，改了就不叫原本了。
+    - 尺寸公式：`w = kPad*2 + cols*cellW + (cols-1)*kGap`；
+      `h = kPad*2 + rows*cellH + (rows-1)*kGap`，见 `PanelGeometry.panelSize`。
+    - **`showPanel()` 不用改**：本来就有上下 clamp（`y + h > vis.maxY - 8` 时整体
+      上顶到 maxY 之下），面板从 132 长到 346 也不会顶出屏幕或压住 Dock。
+    - `layout` 走「分组覆盖全局」，机制同 `group_material()`；命令 `dg layout`，
+      字段 `groups[].layout`。
+    - ⚠️ **这套逻辑有三份实现，改一边必须改另外两边**：
+      ① Swift 的 `columns(for:layout:)` + `geometry(for:)` —— 真正画面板的；
+      ② Python 的 `layout_grid()` + `cell_w_for()` + `panel_size()` —— `dg layout` 预览；
+      ③ `tools/readme_assets.py` 的 `draw_panel(cell_w=…)` —— README 配图，
+         它直接 import dockgroup 取这些常量/函数，并有一条 assert 卡住常量漂移。
+      改完对账：`dg layout` 打印的「n 个 App → 几×几  宽×高」应该和
+      `dg logs <组名>` 里 `panel: … grid=…x… size=…x… cell=…x…` 完全一致。
+
+22. **「和 Dock 条一样高」的两档排列：`dock` / `dock-name`**（2026-09-20 加，
+    用户原话「长条框感觉有些大，改成和 dock 栏一样高度大小看看效果如何」）：
+    - **Dock 条多高、图标多大，量出来而不是猜**。本机三个数（Dock 图标 64、底部 Dock、
+      1408×881）：
+      - `visibleFrame.minY - frame.minY` = **80** —— 系统给 Dock 留的总空间
+      - 2x 截图里 Dock 条**上沿 77.5pt、下沿约 5.5pt** → **条高 ≈ 72pt**，多出的 8pt
+        是系统留白
+      - Dock 里的图标 = **42.5pt**（量 Finder 图标：按「蓝色像素包围盒」求宽高，两个方向
+        都是 42.5）。⚠️ `defaults read com.apple.dock tilesize` 报的是 **64**，
+        **和实际渲染对不上 —— 以截图为准，别信 prefs**。
+      量法：`screencapture -x -R 0,<屏幕高-120>,1408,120`（第 12 条），Pillow 找边缘、
+      找图标包围盒；顺带也能核对拼贴图标在 Dock 里被归一化后的真实大小。
+    - **72pt 装不下「Dock 大小的图标 + 一行可读的字」**：格子最小
+      `4 + 标签13 + 图标42 + 4 = 63`，面板至少 80pt。所以拆成两档而不是硬塞：
+      - `dock` —— 条高 72、留白 **14**（和 Dock 条自己的留白节奏一致），
+        图标 = 72-28 = **44 ≈ Dock 图标同大**，**不画名字**（改挂 `toolTip = title`，
+        走系统原生悬停提示，原生 Dock 也是这个交互）→ 4 个 App = **254×72**
+      - `dock-name` —— 让出 8pt 给名字（面板 **80**），图标锁 42 → 4 个 App = **378×80**
+    - **高度按屏幕实时推算，不写死**：`dockBarHeight()` = `可用区高度 - 8`，夹进
+      `[56, 96]`；`reserved ≤ 20`（Dock 隐藏或贴侧边）时退回 72。用户改 Dock 图标大小
+      后面板跟着走。Python 侧拿不到屏幕尺寸，只用 `DOCK_BAR_DEFAULT = 72` 做**预览估算**。
+    - `PanelGeometry` 为此多了 `icon` / `showLabel` / `iconInset` / `labelY` 四个字段：
+      **图标尺寸不再是全局常量 `kIcon`**，`ItemView` 要把整份几何带进来 ——
+      否则 dock 模式会按长条模式的 58pt 画。
+    - 面板日志加了 `icon=… label=…`，专治「图标大小 / 名字有没有按模式走」。
+    - 想比不同尺寸而不动真机 bundle：`cp -R` 一个 `.app` 到 /tmp、拿 `PlistBuddy`
+      改 `DockGroupLayout`，再跑 `DOCKGROUP_RENDER` 出图（第 21 条那个手法）；
+      要判「和真实 Dock 的关系」就把渲染图按 2x 贴到真机截图上（面板底边落在 88pt）。
 
 ## 环境须知
 
@@ -309,6 +377,12 @@ dg list / open / test / logs / remove / clean / watch-install / restore
   - `tell application "Finder"` 报 `-10004` → 别用 Finder 自动化
   - `launchctl` 全部 I/O error → 监听类方案只能生成 plist，让用户在自己终端执行一次
   - `killall iconservicesd` 会把当前命令连带打死（exit 137）→ 别用
+  - **`dg rebuild` / `dg apply` / `dg layout` 会 `killall Dock`，从沙箱里直跑会被连带
+    打死（exit 137、没有任何输出，看起来像命令没执行）**。两个可行姿势：
+    ① 带沙箱豁免执行；② 丢后台 + 落日志：
+    `( dg layout --all dock > /tmp/dg.log 2>&1 & ); sleep 12; tail /tmp/dg.log`
+    —— 判断有没有真的生效别只看退出码，直接查
+    `groups.json` / `PlistBuddy -c "Print :DockGroupLayout" <组名>.app/Contents/Info.plist`。
 
 ## 排障
 
@@ -321,8 +395,12 @@ dg list / open / test / logs / remove / clean / watch-install / restore
 | 弹出栏被 Dock 挡住 | `isFloatingPanel` 把 level 压到 3 了 → 重跑 `apply` 重新编译 |
 | 面板四角有直角块 | 圆角只裁到了 contentView。theme frame 也要设 `cornerRadius` + `masksToBounds`、给毛玻璃设 `maskImage`、再 `invalidateShadow()`（第 14 条） |
 | 换了 material 但面板没变化 | ① `appearance` 必须设在毛玻璃视图上，只设 window 无效（第 15 条）② 二进制没跟着源码走（第 20 条）：看日志里的 `panel: material=[…]` |
+| 面板比 Dock 高一截 | 默认是 `row`（132pt）。`dg layout --all dock` 换成和 Dock 条等高（72pt、无名字，悬停出提示）；`dg layout 组名 dock-name` 是保留名字的那档（80pt）。两者都按屏幕可用区实时算高度（第 22 条） |
+| dock 模式下图标大小 / 名字不对 | 看 `panel: … icon=… label=…`：`label=false` 是 `dock`，`icon` 应当是「条高 - 28」。数值不对 = 二进制没跟着源码走（第 20 条） |
 | 改了 `main.swift`，rebuild 后界面没变 | 第 20 条。先看 `.cache/<组名>.events.log` 的 `panel:` / `shine:` 两行；强制重编：`rm -f ~/Dock\ Groups/.cache/.launcher.src-stamp` 再 `dg rebuild` |
 | 点 Dock 图标看到的还是旧面板 | ① `.cache/<组名>.events.log` 里没有 `panel:` 行 = 跑的是旧二进制（rebuild 一次）② `winlist` 的窗口尺寸和布局常量算出来的对不上 = 陈旧进程（第 19 条） |
+| 排列不是想要的（还是长条 / 没变网格） | 默认就是 `row` 长条。要网格得显式开：`dg layout --all auto`。① 分组自己写了 `layout` 会覆盖全局 → `dg layout` 看每组实际模式（它会打印「n 个 App → 几×几 宽×高」）；② `bundle-stamp` 缓存 → 清掉再 `dg rebuild`；③ 对账 `.cache/<组名>.events.log` 的 `panel: layout=… grid=… size=… cell=…` |
+| 四宫格 / 九宫格看着不是正方形 | 网格模式必须用 `kCellWGrid 100`（= `kCellH`，见 `geometry(for:)`）。沿用长条的 86 时 2×2 会变成 211×239 的竖长方形 —— 这就是用户当初要求改回长条默认的原因（第 21 条） |
 | 拖 App 上去 Dock 图标不高亮 | 检查 Info.plist 有没有 `CFBundleDocumentTypes`（`com.apple.application`），并确认 `lsregister -f` 注册过 |
 | 拖一次却加了两遍 / Dock 莫名重启两次 | 同一拖放事件会被送两次 → 见技术点 13 的去重；`dg add` 无新增时应零副作用 |
 | 想先看面板长什么样再动系统 | `DOCKGROUP_RENDER=/tmp/x.png <组名>.app/Contents/MacOS/DockGroupLauncher`，直接出 PNG，不动 Dock |

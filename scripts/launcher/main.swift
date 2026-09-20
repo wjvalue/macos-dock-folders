@@ -20,16 +20,31 @@ import Cocoa
 //   ② 每格加白色磨砂底块        → 像一排白瓷片，和浅色玻璃糊在一起，淘汰
 //   ③ 不加底块，只有图标 + 标签  → 和原生 Dock Stack 一致，最干净 ✅
 // 间距也别收太紧：格子 80pt 时「DSH Desktop」会被截成「DSH Deskt...」，
-// 88pt 起才装得下常见的长名字。
+// 86pt 是刚好装下常见长名字的宽度，再窄标签就要截断了。
+//
+// 下面这组是 row / auto / 数字 三种模式的尺寸。想「和 Dock 条一样高」的是
+// dock / dock-name 两种模式 —— 它们的尺寸不写死在这儿，而是按屏幕可用区反推
+// Dock 条的实际高度（见 dockBarHeight()），否则用户一改 Dock 大小就对不齐了。
 let kIcon: CGFloat = 58
-let kCellW: CGFloat = 86
-let kCellH: CGFloat = 100
+let kCellH: CGFloat = 100          // 格子高度。两种布局共用
+let kCellW: CGFloat = 86           // 长条模式的格子宽度：横向排开，窄一点更紧凑
+/// 网格模式的格子宽度。**必须等于 kCellH** —— 格子方了，n×n 的面板才是正方形。
+/// 之前网格也沿用 86 宽，于是 2×2 的面板是 211×239 的竖长方形，和手机上的文件夹
+/// 观感差得远（用户原话「四宫格都不像正方形」）。
+///
+/// 格子高度压不下去：图标和标签都是从格子底部锚定的（图标 y = H-12-58，
+/// 标签 y = 10 高 15），所以 H 最小是 25+58+12 = 95。要正方形只能加宽到 100。
+let kCellWGrid: CGFloat = 100
 let kPad: CGFloat = 16
 let kGap: CGFloat = 7
 let kTileRadius: CGFloat = 15      // 悬停高亮的圆角
 let kPanelRadius: CGFloat = 25     // 面板圆角（必须设在 theme frame 上，见 roundWindow）
 let kPanelTint: CGFloat = 0.5      // 匀色底的不透明度，见 ShineView 注释
-let kMaxCols = 4                   // 超过就换行
+
+/// 列数上限，只作为兜底：具体列数由 columns(for:layout:) 按应用数推导。
+/// 早期这里是 `let cols = min(kMaxCols, n)` —— n ≤ 4 时 cols 恒等于 n、
+/// 行数恒为 1，所以面板永远是单行长条（换行逻辑写了但永远触发不到）。
+let kMaxCols = 4
 
 /// 这几个材质本身是深色的。面板挂上深色外观后，子视图的动态色才会翻白。
 let kDarkMaterials: Set<String> = ["hud", "toolTip"]
@@ -50,6 +65,126 @@ let kIdleSeconds: TimeInterval = {
 struct Entry {
     let title: String
     let path: String
+}
+
+/// 一个布局算出来之后的实际几何。
+struct PanelGeometry {
+    let cellW: CGFloat
+    let cellH: CGFloat
+    let pad: CGFloat
+    let gap: CGFloat
+    /// 图标边长。dock 系模式会把它压到和 Dock 图标同一档，所以不再是全局常量。
+    let icon: CGFloat
+    /// 是否在图标下方画名字。dock 模式不画 —— 高度全留给图标，名字走悬停原生提示
+    /// （system Dock 也是这么做的：名字只出现在指针停上去的时候）。
+    let showLabel: Bool
+    /// 图标底边距格子底边的高度。有名字时要让出标签的位置，所以两种模式取值不同。
+    let iconInset: CGFloat
+    /// 标签盒的 y 坐标。showLabel = false 时无意义。
+    let labelY: CGFloat
+
+    func panelSize(cols: Int, rows: Int) -> NSSize {
+        NSSize(width: pad * 2 + CGFloat(cols) * cellW + CGFloat(cols - 1) * gap,
+               height: pad * 2 + CGFloat(rows) * cellH + CGFloat(rows - 1) * gap)
+    }
+}
+
+/// Dock 条实际有多高（pt）。dock / dock-name 两种模式的高度基准。
+///
+/// 怎么量出来的（2026-09-20 实测）：屏幕可用区已经排掉了 Dock 占用的空间，
+/// 但它比 Dock 条本身多一圈留白 —— 本机（Dock 图标 64、底部 Dock、1408×881）
+/// `visibleFrame.minY - frame.minY = 80`，而 2x 截图的像素测量给出：Dock 条上沿
+/// 在 77.5pt、下沿约 5.5pt，也就是**条高 ≈ 72pt**，另外 8pt 是系统留白。
+/// 所以按「可用区高度 - 8」估，再夹进 [56, 96]：跟着用户的 Dock 大小走，
+/// 又不会被异常值带跑（Dock 隐藏或贴侧边时 reserved ≤ 0，直接用默认值）。
+func dockBarHeight() -> CGFloat {
+    guard let main = NSScreen.main else { return 72 }
+    let reserved = main.visibleFrame.minY - main.frame.minY
+    guard reserved > 20 else { return 72 }
+    return min(max(reserved - 8, 56), 96)
+}
+
+/// 按布局模式给出一整套几何。
+///
+///   row        长条。86×100 格子，图标 58 + 名字
+///   auto       自适应网格。100×100 格子（格子方了 n×n 才是正方形），图标 58 + 名字
+///   数字       指定列数，格子同 auto
+///   dock       **和 Dock 条等高**：条高 72 → 面板 72。上下各留 14pt，图标 = 44，
+///              正好是 Dock 图标自己的大小和留白节奏（实测 Dock 图标 42.5pt、
+///              上下留白各约 14.5pt）—— 弹在 Dock 正上方就像同一条栏的延续。
+///              不画名字（高度全留给图标，名字走悬停原生提示）。4 个 App = 242×72。
+///   dock-name  同上，但让 8pt 给名字（面板 80），图标 42 = Dock 图标的真实大小。
+///              名字照常显示，代价是比 Dock 条高一点点。4 个 App = 378×80。
+func geometry(for layout: String) -> PanelGeometry {
+    let mode = layout.trimmingCharacters(in: .whitespaces).lowercased()
+
+    if mode == "dock" || mode == "dock-name" {
+        let bar = dockBarHeight()
+        if mode == "dock" {
+            // 不画名字：图标拿「条高 - 上下留白」，留白取 14 —— 和 Dock 条自己的一致，
+            // 于是面板里的图标和 Dock 里的图标一样大，视觉上直接连成一条。
+            let pad: CGFloat = 14, gap: CGFloat = 6
+            let icon = bar - pad * 2
+            return PanelGeometry(cellW: icon + 8, cellH: icon, pad: pad, gap: gap,
+                                 icon: icon, showLabel: false, iconInset: 0, labelY: 0)
+        }
+        // 有名字：格子里自下而上是「标签(4+13) → 图标 → 4pt 边距」，
+        // 图标上限锁在 Dock 图标的 42 —— 再大就顶到标签了，而且比 Dock 里的邻居还大。
+        let pad: CGFloat = 8, gap: CGFloat = 6
+        let cellH = bar - pad * 2 + 8
+        let icon = min(cellH - 4 - 17, 42)
+        return PanelGeometry(cellW: kCellW, cellH: cellH, pad: pad, gap: gap,
+                             icon: icon, showLabel: true, iconInset: 4, labelY: 4)
+    }
+
+    // 长条模式保持原来的 86×100 不变；网格模式换 100×100，于是 2×2 是 239×239、
+    // 3×3 是 346×346，都是正方形。
+    return PanelGeometry(cellW: mode == "row" ? kCellW : kCellWGrid,
+                         cellH: kCellH, pad: kPad, gap: kGap,
+                         icon: kIcon, showLabel: true, iconInset: 12, labelY: 10)
+}
+
+/// 按「应用数 + 布局模式」推导网格列数。
+///
+/// 布局模式来自 Info.plist 的 `DockGroupLayout`，由 dockgroup.py 按 groups.json
+/// 的 `layout` 字段写入。和 material 一样是「分组覆盖全局」：分组自己写了用分组的，
+/// 没写才退回顶层默认值（见 dockgroup.py 的 group_layout()）。
+///
+///   row   —— **默认**。旧的长条样式：能铺一行就铺一行，放不下才按 kMaxCols 换行
+///   dock / dock-name —— 同样单行铺开（只是格子尺寸不同，见 geometry(for:)）
+///   auto  —— 按应用数选最接近正方形的网格：
+///             1 个 → 1×1          2 个 → 2×1
+///             3~4 个 → 2×2（四宫格）
+///             5~6 个 → 3×2
+///             7~9 个 → 3×3（九宫格）
+///             ≥10 个 → 按 kMaxCols 换行兜底
+///   数字    —— 直接指定列数，如 "3"。想精确控制某个分组时用
+///
+/// 1~2 个刻意不用 2×2：容器会高 239pt 而只装 1~2 个图标，下半截空着像没加载完。
+func columns(for n: Int, layout: String) -> Int {
+    let n = max(n, 1)
+    let mode = layout.trimmingCharacters(in: .whitespaces).lowercased()
+
+    // 直接指定列数
+    if let fixed = Int(mode), fixed > 0 {
+        return max(1, min(fixed, n))
+    }
+    // 旧的长条行为：单行铺开，超上限才换行。dock / dock-name 共用这条 ——
+    // 它们要的就是「和 Dock 一样的一条」，换行会让高度翻倍、立刻不像 Dock。
+    if mode == "row" || mode == "dock" || mode == "dock-name" {
+        return max(1, min(kMaxCols, n))
+    }
+
+    let want: Int
+    switch n {
+    case 1:     want = 1         // 单个格子
+    case 2:     want = 2         // 2×1，横着放两个最自然
+    case 3...4: want = 2         // 2×2 四宫格
+    case 5...6: want = 3         // 3×2
+    case 7...9: want = 3         // 3×3 九宫格
+    default:    want = kMaxCols  // ≥10 个：按上限换行兜底
+    }
+    return max(1, min(min(want, n), kMaxCols))
 }
 
 /// 把配置里的材质名映射到 AppKit 的效果材质。
@@ -235,16 +370,20 @@ final class ItemView: NSView {
     private let index: Int
     private let title: String
     private let icon: NSImage
+    /// 尺寸随布局走（dock 模式的图标比长条模式小），所以整份几何都带进来，
+    /// 不读全局常量 —— 否则 dock 模式会按长条模式的 58pt 画。
+    private let geom: PanelGeometry
     private let onPick: (Int) -> Void
     private var area: NSTrackingArea?
     /// 悬停状态。标签颜色跟着它走（默认灰、悬停转正文色），所以要触发重绘。
     private var hovered = false
 
-    init(index: Int, title: String, icon: NSImage, frame: NSRect,
+    init(index: Int, title: String, icon: NSImage, geom: PanelGeometry, frame: NSRect,
          onPick: @escaping (Int) -> Void) {
         self.index = index
         self.title = title
         self.icon = icon
+        self.geom = geom
         self.onPick = onPick
         super.init(frame: frame)
         // layer 相关的设置全在 init 里定死：跟踪过程中切 layer backing
@@ -253,6 +392,9 @@ final class ItemView: NSView {
         layer?.cornerRadius = kTileRadius
         layer?.cornerCurve = .continuous
         layer?.backgroundColor = NSColor.clear.cgColor
+        // 不画名字的模式（dock）用系统原生悬停提示兜底「这是哪个 App」。
+        // 比自绘一个浮层便宜得多，而且和 Dock 自己的名字提示是同一套交互。
+        if !geom.showLabel { toolTip = title }
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -298,13 +440,14 @@ final class ItemView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        // 图标：垂直略偏上，给下方标签留位置。
-        // 投影是必要的：Dock 分组面板是半透明毛玻璃，Hermes / DSH 这类
-        // 白底圆角图标直接放上去边界会糊，有投影轮廓才立得住。
+        // 图标：有名字时垂直略偏上，给下方标签留位置；没名字（dock 模式）时垂直居中，
+        // 把整条高度都用上。投影是必要的：Dock 分组面板是半透明毛玻璃，Hermes /
+        // DSH 这类白底圆角图标直接放上去边界会糊，有投影轮廓才立得住。
         // 但别给太重 —— 浅色毛玻璃上一圈黑边会显脏。
-        let iconRect = NSRect(x: (bounds.width - kIcon) / 2,
-                              y: bounds.height - 12 - kIcon,
-                              width: kIcon, height: kIcon)
+        let iconRect = NSRect(x: (bounds.width - geom.icon) / 2,
+                              y: geom.showLabel ? bounds.height - geom.iconInset - geom.icon
+                                                : (bounds.height - geom.icon) / 2,
+                              width: geom.icon, height: geom.icon)
         if let ctx = NSGraphicsContext.current?.cgContext {
             ctx.saveGState()
             ctx.setShadow(offset: CGSize(width: 0, height: -1), blur: 4,
@@ -336,8 +479,10 @@ final class ItemView: NSView {
             .foregroundColor: tone,
             .paragraphStyle: ps,
         ]
-        NSAttributedString(string: title, attributes: attrs)
-            .draw(in: NSRect(x: 4, y: 10, width: bounds.width - 8, height: 15))
+        if geom.showLabel {
+            NSAttributedString(string: title, attributes: attrs)
+                .draw(in: NSRect(x: 2, y: geom.labelY, width: bounds.width - 4, height: 15))
+        }
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -370,6 +515,12 @@ final class Delegate: NSObject, NSApplicationDelegate {
     }
     private var materialName: String {
         (Bundle.main.object(forInfoDictionaryKey: "DockGroupMaterial") as? String) ?? "menu"
+    }
+    /// 网格布局模式：row（默认，长条）/ auto（按应用数自适应）/ 数字（指定列数）/
+    /// dock（和 Dock 条等高、不画名字）/ dock-name（同意但让 8pt 给名字）。
+    /// 缺失时按 row 处理 —— 兜底要和 dockgroup.py 的 DEFAULT_LAYOUT 一致。
+    private var layoutMode: String {
+        (Bundle.main.object(forInfoDictionaryKey: "DockGroupLayout") as? String) ?? "row"
     }
     /// dockgroup.py 的绝对路径。GUI 进程的 PATH 只有 /usr/bin:/bin，
     /// 不能指望 `dg` 在 PATH 里，所以由 Info.plist 直接塞绝对路径进来。
@@ -677,10 +828,11 @@ final class Delegate: NSObject, NSApplicationDelegate {
         }
 
         let n = max(entries.count, 1)
-        let cols = min(kMaxCols, n)
+        let cols = columns(for: n, layout: layoutMode)
         let rows = Int(ceil(Double(n) / Double(cols)))
-        let w = kPad * 2 + CGFloat(cols) * kCellW + CGFloat(cols - 1) * kGap
-        let h = kPad * 2 + CGFloat(rows) * kCellH + CGFloat(rows - 1) * kGap
+        let geom = geometry(for: layoutMode)
+        let size = geom.panelSize(cols: cols, rows: rows)
+        let w = size.width, h = size.height
 
         let p = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: w, height: h),
                               styleMask: [.borderless, .nonactivatingPanel],
@@ -702,7 +854,12 @@ final class Delegate: NSObject, NSApplicationDelegate {
         let bg = DropVisualEffectView(frame: NSRect(x: 0, y: 0, width: w, height: h))
         // 材质与外观的判定最容易出现「改了不生效」，落一行日志方便对账：
         // 面板真机发白时，先看这行是 material 不对还是 appearance 没跟上。
-        trace("panel: material=[\(materialName)] dark=\(kDarkMaterials.contains(materialName)) "
+        // 布局同理：网格不对时先看这行的 layout / grid / size 对不对，
+        // 能立刻区分「配置没传进来」「列数算错」和「二进制压根没换」。
+        trace("panel: layout=[\(layoutMode)] entries=\(n) grid=\(cols)x\(rows) "
+              + "size=\(Int(w))x\(Int(h)) cell=\(Int(geom.cellW))x\(Int(geom.cellH)) "
+              + "icon=\(Int(geom.icon)) label=\(geom.showLabel) "
+              + "material=[\(materialName)] dark=\(kDarkMaterials.contains(materialName)) "
               + "window=\(p.effectiveAppearance.name.rawValue)")
         // 深色材质必须把 appearance 设在「毛玻璃视图自己」身上。
         // 只在 NSWindow 上设 p.appearance 是不够的 —— 实测那样 hud 依然渲染成
@@ -753,13 +910,14 @@ final class Delegate: NSObject, NSApplicationDelegate {
             let r = i / cols, c = i % cols
             // 每行独立居中：最后一行不满时也居中，不然会甩在左边很难看
             let inRow = min(cols, n - r * cols)
-            let rowW = CGFloat(inRow) * kCellW + CGFloat(inRow - 1) * kGap
-            let x = (w - rowW) / 2 + CGFloat(c) * (kCellW + kGap)
-            let y = h - kPad - CGFloat(r + 1) * kCellH - CGFloat(r) * kGap
+            let rowW = CGFloat(inRow) * geom.cellW + CGFloat(inRow - 1) * geom.gap
+            let x = (w - rowW) / 2 + CGFloat(c) * (geom.cellW + geom.gap)
+            let y = h - geom.pad - CGFloat(r + 1) * geom.cellH - CGFloat(r) * geom.gap
             let icon = NSWorkspace.shared.icon(forFile: item.path)
-            icon.size = NSSize(width: kIcon, height: kIcon)
-            let view = ItemView(index: i, title: item.title, icon: icon,
-                                frame: NSRect(x: x, y: y, width: kCellW, height: kCellH)) {
+            icon.size = NSSize(width: geom.icon, height: geom.icon)
+            let view = ItemView(index: i, title: item.title, icon: icon, geom: geom,
+                                frame: NSRect(x: x, y: y, width: geom.cellW,
+                                              height: geom.cellH)) {
                 [weak self] idx in self?.pick(idx)
             }
             bg.addSubview(view)
