@@ -48,42 +48,39 @@ iPhone 早就用文件夹解决了，而 macOS **从来没把这个交互搬过�
 
 ## 安装
 
-依赖就下面这些。**Pillow 不在 macOS 自带依赖里**，需要单独装一次 ——
-也是唯一一个得手动补的（`tools/install.command` 会发现缺了并顺手装上）。
+运行引擎是原生 Swift，依赖只有 macOS 的开发工具链和系统框架；不需要安装 Python、
+Pillow 或任何第三方运行库。`tools/install.command` 会编译一次引擎并安装 `dg`。
 
 | 依赖 | 用来干什么 | 怎么来 |
 |---|---|---|
-| `/usr/bin/python3` | 跑脚本本身 | 随 Xcode Command Line Tools |
-| **Pillow** | 合成分组图标的拼贴图 | `/usr/bin/python3 -m pip install --user Pillow` |
-| `swiftc` `codesign` `iconutil` `sips` | 编译启动器 App、打包 `.icns` | 随 Xcode Command Line Tools |
+| `swiftc` | 编译原生引擎和启动器 App | 随 Xcode Command Line Tools |
+| `codesign` `iconutil` `sips` | 临时签名、打包 `.icns` | 随 Xcode Command Line Tools |
 | `osascript` | 调 AppKit / Foundation | 系统自带 |
 
 ```bash
 git clone https://github.com/wjvalue/macos-dock-folders.git
 cd macos-dock-folders
 
-# 体检：确认依赖齐全
-/usr/bin/python3 scripts/dockgroup.py doctor
+# 编译引擎、安装 dg，并体检
+bash tools/install.command
+dg doctor
 ```
 
 缺 Command Line Tools 的话：`xcode-select --install`。
 
-装一个短命令 `dg` —— 会自动把当前路径写进去，之后直接敲 `dg` 就行。
-**最省事的是双击 `tools/install.command`**：补 Pillow + 装 `dg` + 清隔离标记 + 体检
-一条龙，而且它**不会覆盖**你已经装过的 `dg`。手动装也就三行：
+装一个短命令 `dg` —— 会编译并安装原生引擎，之后直接敲 `dg` 就行。
+**最省事的是双击 `tools/install.command`**：编译 Swift 引擎 + 装 `dg` + 清隔离标记 + 体检
+一条龙。手动安装也可以直接执行：
 
 ```bash
-mkdir -p ~/.local/bin
-printf '#!/bin/bash\nexec /usr/bin/python3 "%s/scripts/dockgroup.py" "$@"\n' "$PWD" > ~/.local/bin/dg
-chmod +x ~/.local/bin/dg
+bash tools/install.command
 
 # 确认 ~/.local/bin 在 PATH 里（zsh 用户写进 ~/.zshrc）
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-> 脚本里写死 `/usr/bin/python3` 是有意的：Pillow 装进的是**它**的 user site
-> （`~/Library/Python/3.9/lib/python/site-packages`）。用 `env python3` 可能解析到
-> Homebrew / conda 的解释器，那些读不到这份 Pillow，于是照样报「缺少 Pillow」。
+> 引擎和启动器都是 Swift 编译的原生程序。首次安装需要 `swiftc`，之后日常运行不再
+> 启动 Python，也不会读取任何 Python site-packages。
 
 ### 打不开？被 Gatekeeper 拦住了？
 
@@ -255,7 +252,7 @@ dg gui --rebuild    # 改过窗口源码后强制重编译
 `scripts/manager/main.swift`，然后 `dg gui --rebuild`。
 
 > **它和命令行什么关系**：增删 App、应用、移除、回滚这些会改配置的动作，窗口一律
-> 转发给 `scripts/dockgroup.py` 执行；只有「外观」三项是窗口直接写 `groups.json` 的
+> 转发给 bundle 内的 Swift 引擎执行；只有「外观」三项是窗口直接写 `groups.json` 的
 > （为了能即时预览，不至于每拖一下就重启一次 Dock）。两边共用同一套逻辑，
 > 配置文件格式也逐字节一致，不会各说各话。
 
@@ -484,7 +481,7 @@ Dock 支持把文件夹放进去（Stack），但它有个硬限制：
 ```
 
 生成的 App 不会把构建机器上的分组目录或仓库绝对路径写进 `Info.plist`：它根据自身位于
-`.apps` 下的位置解析配置根目录，并把拖放回调所需的引擎资源放在 `Contents/Resources/`。
+`.apps` 下的位置解析配置根目录，并把拖放回调所需的 Swift 引擎放在 `Contents/Resources/`。
 因此整体迁移 `Dock Groups` 目录后，启动器和管理窗口仍能找到同一份配置。
 
 ### 已知限制
@@ -535,8 +532,7 @@ ln -s "$PWD" ~/.workbuddy/skills/macos-dock-folders
 ## 开发
 
 `docs/` 下的配图由脚本生成，不靠手工截图 —— 手工截图做不到统一的背景、留白和字体，
-而且容易把终端内容一起截进去。脚本用的是同一套图标提取和合成算法
-（`scripts/dockgroup.py`），只是换了个「舞台」：
+而且容易把终端内容一起截进去。配图脚本是开发期工具，不属于运行时依赖：
 
 ```bash
 /usr/bin/python3 tools/readme_assets.py     # 重新生成 docs/*.png

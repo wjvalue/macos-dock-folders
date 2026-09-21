@@ -163,9 +163,9 @@ func geometry(for layout: String) -> PanelGeometry {
 
 /// 按「应用数 + 布局模式」推导网格列数。
 ///
-/// 布局模式来自 Info.plist 的 `DockGroupLayout`，由 dockgroup.py 按 groups.json
+/// 布局模式来自 Info.plist 的 `DockGroupLayout`，由 Swift 引擎按 groups.json
 /// 的 `layout` 字段写入。和 material 一样是「分组覆盖全局」：分组自己写了用分组的，
-/// 没写才退回顶层默认值（见 dockgroup.py 的 group_layout()）。
+/// 没写才退回顶层默认值。
 ///
 ///   row   —— **默认**。旧的长条样式：能铺一行就铺一行，放不下才按 kMaxCols 换行
 ///   dock / dock-name —— 同样单行铺开（只是格子尺寸不同，见 geometry(for:)）
@@ -252,7 +252,7 @@ func trace(_ msg: String) {
 // kAEOpenDocuments 苹果事件，App 收到的就是被拖文件的 URL/路径。
 //
 // 所以「拖 App 到分组图标上加入分组」是可以做的：启动器截获这个事件，
-// 调 Python 脚本走和 `dg add` 完全一样的链路（建别名 → 刷新图标 → 重启 Dock）。
+// 调 Swift 引擎走和 `dg add` 完全一样的链路（建别名 → 刷新图标 → 重启 Dock）。
 // 拖到展开的网格面板上同理（面板注册了 fileURL 拖放）。
 // 来源必须是 Finder 里的 App 文件（如 /Applications 窗口），不能是 Dock 图标本身。
 
@@ -552,19 +552,19 @@ final class Delegate: NSObject, NSApplicationDelegate {
     }
     /// 网格布局模式：row（默认，长条）/ auto（按应用数自适应）/ 数字（指定列数）/
     /// dock（和 Dock 条等高、不画名字）/ dock-name（同意但让 8pt 给名字）。
-    /// 缺失时按 row 处理 —— 兜底要和 dockgroup.py 的 DEFAULT_LAYOUT 一致。
+    /// 缺失时按 row 处理 —— 兜底要和 Swift 引擎的默认值一致。
     private var layoutMode: String {
         (Bundle.main.object(forInfoDictionaryKey: "DockGroupLayout") as? String) ?? "row"
     }
-    /// 找到 bundle 自带的引擎脚本。
+    /// 找到 bundle 自带的 Swift 引擎。
     ///
-    /// 保留环境变量入口供开发调试使用；正式产物不再从 Info.plist 读取仓库绝对路径。
-    private var scriptURL: URL? {
-        if let override = ProcessInfo.processInfo.environment["DOCKGROUP_SCRIPT"],
+    /// 引擎和启动器一起分发，拖放回调不再启动 Python，也不依赖构建机路径。
+    private var engineURL: URL? {
+        if let override = ProcessInfo.processInfo.environment["DOCKGROUP_ENGINE"],
            !override.isEmpty {
             return URL(fileURLWithPath: (override as NSString).expandingTildeInPath)
         }
-        return Bundle.main.url(forResource: "dockgroup", withExtension: "py")
+        return Bundle.main.url(forResource: "DockGroupEngine", withExtension: nil)
     }
 
     func applicationDidFinishLaunching(_ note: Notification) {
@@ -730,18 +730,20 @@ final class Delegate: NSObject, NSApplicationDelegate {
         runAdd(paths)
     }
 
-    /// 跑 dockgroup.py add，走和命令行完全一样的链路（建别名 → 刷新图标 → 重启 Dock）。
+    /// 调用随 App 分发的 Swift 引擎，走和命令行完全一样的链路（建别名 → 刷新图标）。
     private func runAdd(_ paths: [String]) {
-        guard let script = scriptURL else {
-            trace("add aborted: bundled engine script is missing")
+        guard let engine = engineURL else {
+            trace("add aborted: bundled Swift engine is missing")
             return
         }
         let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        task.arguments = [script.path, "add", groupName] + paths
-        task.currentDirectoryURL = script.deletingLastPathComponent()
+        task.executableURL = engine
+        task.arguments = ["add", groupName] + paths
         var environment = ProcessInfo.processInfo.environment
         environment["DOCKGROUP_HOME"] = baseDirectory
+        if let resources = Bundle.main.resourceURL {
+            environment["DOCKGROUP_SOURCE_ROOT"] = resources.appendingPathComponent("engine-resources").path
+        }
         task.environment = environment
         let pipe = Pipe()
         task.standardOutput = pipe
