@@ -51,6 +51,9 @@ Core/
   Config.swift        groups.json 读写、分组级覆盖解析
   Dock.swift          Dock plist 读取、别名解析、分组文件夹扫描
   Quarantine.swift    隔离属性检测与清理、结束常驻启动器
+  Mosaic.swift        分组图标合成（从 tools/mosaic_poc 移植，已对齐 Pillow）
+  AppIcon.swift       从 .app 提取图标（直接调 NSWorkspace，不走 JXA）
+  Icns.swift          PNG → .icns
   Sh.swift            跑外部命令
   Util.swift          pad（按字符数补位）、pyLess（码点序比较）
 Commands/

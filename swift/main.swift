@@ -22,20 +22,17 @@ func showHelp() {
 
     用法：dg <命令> [参数]
 
-    命令：
+    已搬到 Swift 版：
       doctor              体检：依赖、落盘、签名、隔离、产物路径
       list                列出配置里的分组
       init                扫描当前 Dock 生成起始配置
-      apply               生成 App 并写入 Dock
-      rebuild             只重建图标与 App，不动 Dock
-      style [组名] <风格>  切换拼贴图标风格
-      layout [组名] <模式> 切换面板排列
-      add <组名> <App>    把 App 加进分组
-      del <组名> <App>    只删别名，不碰真实 App
-      open <组名>         打开分组文件夹
-      restore             从备份恢复 Dock
 
-    当前是迁移中的 Swift 实现，命令逐个搬过来，没搬的会明确报错。
+    还没搬（敲了会提示你去用 Python 版）：
+      apply  rebuild  style  layout  add  del  open  restore
+      new  preview  remove  clean  watch-install  watch-uninstall
+      test  logs  gui
+
+    迁移进行中：两套实现并存，逐个命令对齐后再切换。
     """)
 }
 
@@ -77,6 +74,41 @@ case "__dump-config":
     // 配置模块没有别的正确性关卡，而这个格式一旦漂了，
     // groups.json 的 diff 就会全是噪音（2026-09-20 踩过一次）。
     print(JSONValue.object(loadConfig()).serialized(), terminator: "")
+
+case "__make-mosaic":
+    // 内部调试命令：直接合成一张分组图标。对照测试拿它和 Python 的 make_mosaic
+    // 比像素 —— 走固定输入图标，把 app_icons 那层变量隔离掉。
+    guard args.count >= 4 else {
+        FileHandle.standardError.write(
+            "用法：__make-mosaic <style> <size> <out.png> <icon.png>...\n".data(using: .utf8)!)
+        exit(2)
+    }
+    makeMosaic(Array(args.dropFirst(3)), out: args[2],
+               size: Int(args[1]) ?? 1024, style: args[0])
+
+case "__grab-icons":
+    // 内部调试命令：把若干 App 的图标抓到指定目录，用来对照 Python 的 app_icons。
+    // 只打印「名字 + 成功/失败」，不带路径 —— 两边缓存目录不同，带路径就没法 diff 了。
+    guard args.count >= 2 else {
+        FileHandle.standardError.write(
+            "用法：__grab-icons <输出目录> <App 路径>...\n".data(using: .utf8)!)
+        exit(2)
+    }
+    let dir = URL(fileURLWithPath: args[0])
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let apps = args.dropFirst().map { URL(fileURLWithPath: $0) }
+    let got = appIcons(apps)
+    for a in apps {
+        let name = a.deletingPathExtension().lastPathComponent
+        if let p = got[a.path] {
+            let dst = dir.appendingPathComponent("\(name).png")
+            try? FileManager.default.removeItem(at: dst)
+            try? FileManager.default.copyItem(at: p, to: dst)
+            print("\(name)  ok")
+        } else {
+            print("\(name)  失败")
+        }
+    }
 
 default:
     if notYetPorted.contains(cmd) {

@@ -1,22 +1,20 @@
 #!/bin/bash
-# Python 版 ⇄ Swift 版 输出对照测试。
+# Python 版 ⇄ Swift 版 对照测试。
 #
-# 迁移期的一致性保证：同一个命令分别跑两套实现，逐行 diff。
-# 这是「绞杀者模式」里唯一的正确性关卡 —— 靠肉眼看输出会漏掉一个空格的差别，
-# 而空格恰恰最容易出问题：f-string 的 `{:<10}` 是按**字符数**补位、
-# print 的换行次数、中文名在补位时算几个位置。
+# 迁移期的一致性保证。三类对照：
 #
-# 覆盖三类场景：
-#   · 正常路径 —— 每个已搬迁的命令跑一遍
-#   · 异常分支 —— doctor 的「依赖缺失」「产物路径失效」在正常环境下根本跑不到。
-#     只测正常路径的话，这些分支里的差异永远发现不了（而它们恰恰是 dg doctor
-#     存在的意义，出事时用户看到的就是那些行）。
-#   · 有副作用的命令 —— init 会写 groups.json，不能直接跑两遍（第二遍就会因为
-#     「配置已存在」走进另一条分支）。用隔离的 DOCKGROUP_HOME + 每轮清空处理，
-#     顺便把「已存在」和 --force 两条分支也覆盖掉。
+#   ① 文本输出 —— 同一个命令跑两套实现，逐行 diff。这是最严的一档：
+#      一个空格的差别都算失败。空格恰恰最容易出问题（f-string 的 `{:<10}`
+#      按**字符数**补位、print 的换行次数、中文名算几个位置）。
+#   ② 生成的文件 —— init 会写 groups.json，把它并进输出一起 diff。
+#   ③ 像素 —— 图像合成和图标提取没法逐字节比（PNG 编码器不同），改比 MAE。
+#      阈值 1.0/255：这个量级足以区分「移植对了」和「哪儿写错了」。
+#      实测两条路的 MAE 都在 0.3~0.7，而写错一处就是十几。
 #
-# 用法：
-#   tools/compare_cli.sh
+# 异常分支也覆盖：doctor 的「依赖缺失」「产物路径失效」在正常环境下根本跑不到，
+# 得靠 DOCKGROUP_HOME 和 PATH 把它们逼出来 —— 而那恰恰是 doctor 存在的意义。
+#
+# 用法：tools/compare_cli.sh
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -24,6 +22,9 @@ REPO="$PWD"
 PY=/usr/bin/python3
 SW="$REPO/build/dg-swift"
 TMPHOME=/tmp/cmpcli-home
+PX=/tmp/cmpcli-px
+ICONS="$HOME/Dock Groups/.cache/app-icons"
+PIXEL_MAX=1.0
 
 if [ ! -x "$SW" ]; then
     echo "还没编译，先跑：swift/build.sh" >&2
@@ -62,7 +63,6 @@ run_pair() {
 }
 
 # groups.json 读进来再序列化 —— 配置模块唯一的正确性关卡。
-# 格式一旦漂了，groups.json 的 diff 里就全是噪音（2026-09-20 实际踩过）。
 case_config() {
     "$PY" -c "
 import io, json, sys
@@ -78,8 +78,6 @@ sys.stdout.write(buf.getvalue())
     report "config 往返序列化" "$ra" "$rb"
 }
 
-# 造一个「产物路径失效」的场景：隔离的 DOCKGROUP_HOME + 一个 Info.plist
-# 指向不存在路径的 .app。doctor 全靠这种场景才有意义。
 setup_stale_home() {
     rm -rf "$TMPHOME"
     mkdir -p "$TMPHOME/.apps/Fake.app/Contents"
@@ -95,12 +93,11 @@ with open('$TMPHOME/.apps/Fake.app/Contents/Info.plist', 'wb') as f:
 "
 }
 
-# 有副作用的命令：两边各跑一次，每次先清空落盘目录，
-# 把**生成出来的 groups.json 也并进输出**一起比。
-# $1=名称  $2=环境变量串   $3=跑之前是否预置一份配置（"" 或 "existing"）  $4...=参数
+# 有副作用的命令：隔离落盘 + 每轮清空，把生成出来的 groups.json 并进输出一起比。
+# $1=名称  $2=环境变量串  $3=是否预置配置（"" 或 "existing"）  $4...=参数
 run_pair_stateful() {
     local name="$1" envs="$2" preset="$3"; shift 3
-    local ra rb
+    local ra rb out
     for side in a b; do
         rm -rf "$TMPHOME"; mkdir -p "$TMPHOME"
         [ "$preset" = "existing" ] && echo '{"groups": []}' > "$TMPHOME/groups.json"
@@ -121,14 +118,86 @@ run_pair_stateful() {
     report "$name" "$ra" "$rb"
 }
 
-echo "Python ⇄ Swift 输出对照"
-echo "── 正常路径 ──"
+# 像素对照：不算逐字节，只看 MAE 够不够小。
+pixel_report() {   # $1=名称  $2=参考 png  $3=待测 png
+    local mae
+    mae=$("$PY" - "$2" "$3" <<'PY'
+import sys
+from PIL import Image, ImageChops, ImageStat
+a = Image.open(sys.argv[1]).convert("RGBA")
+b = Image.open(sys.argv[2]).convert("RGBA")
+if a.size != b.size:
+    print("尺寸不同"); sys.exit(0)
+d = ImageChops.difference(a, b)
+print(f"{sum(ImageStat.Stat(d).mean[:3]) / 3:.4f}")
+PY
+)
+    if [ "$mae" = "尺寸不同" ] || [ -z "$mae" ]; then
+        printf "  ❌ %-30s %s\n" "$1" "${mae:-读取失败}"
+        fail=$((fail + 1))
+        return
+    fi
+    if "$PY" -c "import sys; sys.exit(0 if float('$mae') < $PIXEL_MAX else 1)"; then
+        printf "  ✅ %-30s MAE %.4f / 255\n" "$1" "$mae"
+        pass=$((pass + 1))
+    else
+        printf "  ❌ %-30s MAE %s（阈值 ${PIXEL_MAX}）\n" "$1" "$mae"
+        fail=$((fail + 1))
+    fi
+}
+
+# 图像合成：固定输入图标，把 app_icons 那层的变量隔离掉
+case_mosaic() {
+    local style="$1"
+    local i1="$ICONS/App Store-1786589515.png" i2="$ICONS/Calculator-1786589515.png"
+    local i3="$ICONS/DSH Desktop-1789270360.png" i4="$ICONS/Mail-1786589515.png"
+    for f in "$i1" "$i2" "$i3" "$i4"; do
+        [ -f "$f" ] || { printf "  ·  %-30s 跳过（测试图标不存在）\n" "mosaic $style"; return; }
+    done
+    "$PY" -c "
+import sys; sys.path.insert(0, '$REPO/scripts')
+from dockgroup import make_mosaic
+make_mosaic(['$i1','$i2','$i3','$i4'], '$PX-ref.png', style='$style')
+"
+    "$SW" __make-mosaic "$style" 1024 "$PX-sw.png" "$i1" "$i2" "$i3" "$i4" >/dev/null
+    pixel_report "mosaic：$style" "$PX-ref.png" "$PX-sw.png"
+}
+
+# 图标提取：Python 走 JXA，Swift 直接调 NSWorkspace
+case_grab() {
+    local apps=(/System/Applications/Calculator.app /System/Applications/Notes.app)
+    for a in "${apps[@]}"; do [ -d "$a" ] || { echo "  ·  跳过图标提取（测试 App 不存在）"; return; }; done
+    # ⚠️ 两边必须用**各自的** DOCKGROUP_HOME：否则第二遍会命中第一遍写下的缓存、
+    # 直接复用同一个 PNG，MAE 恒为 0 —— 看着全绿，其实压根没测到提取逻辑。
+    rm -rf "$PX"; mkdir -p "$PX/py" "$PX/sw"
+    DOCKGROUP_HOME="$PX/home-py" "$PY" -c "
+import shutil, sys
+sys.path.insert(0, '$REPO/scripts')
+from pathlib import Path
+from dockgroup import app_icons
+apps = [Path(p) for p in ['${apps[0]}', '${apps[1]}']]
+got = app_icons(apps)
+for a in apps:
+    p = got.get(a)
+    if p: shutil.copy(p, Path('$PX/py') / (a.stem + '.png'))
+" >/dev/null 2>&1
+    DOCKGROUP_HOME="$PX/home-sw" "$SW" __grab-icons "$PX/sw" "${apps[0]}" "${apps[1]}" >/dev/null 2>&1
+    for f in "$PX/py"/*.png; do
+        [ -f "$f" ] || continue
+        n=$(basename "$f")
+        [ -f "$PX/sw/$n" ] && pixel_report "图标提取：$n" "$f" "$PX/sw/$n" \
+                           || { printf "  ❌ %-30s Swift 侧没产出\n" "图标提取：$n"; fail=$((fail + 1)); }
+    done
+}
+
+echo "Python ⇄ Swift 对照"
+echo "── 文本输出：正常路径 ──"
 run_pair "list" "" list
 run_pair "doctor" "" doctor
 case_config
 
 echo
-echo "── 异常分支 ──"
+echo "── 文本输出：异常分支 ──"
 setup_stale_home
 run_pair "doctor：产物路径失效" "DOCKGROUP_HOME=$TMPHOME" doctor
 run_pair "doctor：PATH 里什么都没有" "PATH=/nonexistent" doctor
@@ -140,6 +209,15 @@ run_pair_stateful "init" "DOCKGROUP_HOME=$TMPHOME" "" init
 run_pair_stateful "init：配置已存在" "DOCKGROUP_HOME=$TMPHOME" "existing" init
 run_pair_stateful "init --force：覆盖" "DOCKGROUP_HOME=$TMPHOME" "existing" init --force
 rm -rf "$TMPHOME"
+
+echo
+echo "── 像素对照（阈值 MAE < ${PIXEL_MAX}）──"
+rm -rf "$PX"; mkdir -p "$PX"
+case_mosaic graphite
+case_mosaic paper
+case_mosaic glass-dark
+case_grab
+rm -rf "$PX"
 
 echo
 if [ "$fail" -eq 0 ]; then
