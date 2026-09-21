@@ -2312,8 +2312,13 @@ def cmd_clean(cfg, args):
 
 
 def cmd_watch_install(cfg, args):
-    AGENT_PLIST.parent.mkdir(parents=True, exist_ok=True)
-    AGENT_PLIST.write_bytes(plistlib.dumps({
+    # 对照测试模式：plist 写进隔离目录的 watch-test.plist（绝不碰真实的
+    # ~/Library/LaunchAgents），launchctl 一概不碰 —— 输出走「没权限」分支。
+    # 真实模式行为与原先完全一致（agent == AGENT_PLIST）。
+    override = dock_plist_override()
+    agent = (override.parent / "watch-test.plist") if override is not None else AGENT_PLIST
+    agent.parent.mkdir(parents=True, exist_ok=True)
+    agent.write_bytes(plistlib.dumps({
         "Label": AGENT_LABEL,
         "ProgramArguments": ["/usr/bin/python3", str(SCRIPT_DIR / "dockgroup.py"),
                              "rebuild", "--quiet"],
@@ -2322,23 +2327,29 @@ def cmd_watch_install(cfg, args):
         "ThrottleInterval": 5,
     }))
     domain = f"gui/{uid()}"
-    subprocess.run(f"launchctl bootout {domain} {AGENT_PLIST} >/dev/null 2>&1", shell=True)
-    r = subprocess.run(f"launchctl bootstrap {domain} {AGENT_PLIST}",
-                       shell=True, capture_output=True, text=True)
-    if r.returncode == 0:
-        print(f"已写入并启用 {AGENT_PLIST}")
+    if override is None:
+        subprocess.run(f"launchctl bootout {domain} {agent} >/dev/null 2>&1", shell=True)
+        r = subprocess.run(f"launchctl bootstrap {domain} {agent}",
+                           shell=True, capture_output=True, text=True)
+    else:
+        r = None
+    if r is not None and r.returncode == 0:
+        print(f"已写入并启用 {agent}")
         print("自动监听生效：往分组文件夹里加/删 App，图标会自动更新。")
     else:
-        print(f"已写入 {AGENT_PLIST}")
+        print(f"已写入 {agent}")
         print("但当前进程没有 launchd 权限，无法自动加载。请在你自己的「终端」里执行一次：")
-        print(f"  launchctl bootstrap {domain} {AGENT_PLIST}")
+        print(f"  launchctl bootstrap {domain} {agent}")
     print("注：之后新增分组文件夹，需要重新跑一次 watch-install 才会被监听。")
 
 
 def cmd_watch_uninstall(cfg, args):
-    subprocess.run(f"launchctl bootout gui/{uid()} {AGENT_PLIST}", shell=True,
-                   capture_output=True, text=True)
-    AGENT_PLIST.unlink(missing_ok=True)
+    override = dock_plist_override()
+    agent = (override.parent / "watch-test.plist") if override is not None else AGENT_PLIST
+    if override is None:
+        subprocess.run(f"launchctl bootout gui/{uid()} {AGENT_PLIST}", shell=True,
+                       capture_output=True, text=True)
+    agent.unlink(missing_ok=True)
     print("自动监听已卸载")
 
 
@@ -2353,7 +2364,8 @@ def cmd_test(cfg, args):
     app = APPS / f"{g['name']}.app"
     if not app.exists():
         sys.exit(f"启动器还没构建：{app}，先跑一次 apply")
-    sh(["open", str(app)])
+    if dock_plist_override() is None:      # 对照测试模式下不真启动（Swift 版同款开关）
+        sh(["open", str(app)])
     print(f"已启动 {app}")
     print(f"运行日志：{CACHE / (g['name'] + '.launch.log')}")
 

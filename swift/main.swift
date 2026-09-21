@@ -37,9 +37,14 @@ func showHelp() {
       remove <组名>...     从 Dock 移除（保留文件夹）
       clean <组名>...      从 Dock 移除并删掉文件夹
       restore [备份路径]   出错了回滚 Dock（不带参数用最新备份）
+      preview [组名...]    合成图标并生成对比图（只读）
+      test <组名>          启动一次启动器 App 做真机测试
+      logs <组名>          查看运行日志（面板几何 + 事件轨迹）
+      watch-install        监听分组文件夹变化自动重建（launchd）
+      watch-uninstall      卸载监听
 
     还没搬（敲了会提示你去用 Python 版）：
-      preview  watch-install  watch-uninstall  test  logs  gui
+      gui（依赖 manager 图标绘制的像素级移植，单独一轮做）
 
     迁移进行中：两套实现并存，逐个命令对齐后再切换。
     """)
@@ -54,10 +59,8 @@ guard let cmd = rawArgs.first else {
 let args = Array(rawArgs.dropFirst())
 
 /// 还没搬过来的子命令，给出明确指引而不是含糊的「未知命令」。
-let notYetPorted: Set<String> = [
-    "preview", "watch-install", "watch-uninstall",
-    "test", "logs", "gui",
-]
+/// gui 压着 make_manager_icon 的像素级移植（PIL 画图标），值得单独一轮验证。
+let notYetPorted: Set<String> = ["gui"]
 
 switch cmd {
 case "--version", "-v", "version":
@@ -107,6 +110,21 @@ case "clean":
 
 case "restore":
     cmdRestore(loadConfig(), args)
+
+case "preview":
+    cmdPreview(loadConfig(), args)
+
+case "test":
+    cmdTest(loadConfig(), args)
+
+case "logs":
+    cmdLogs(loadConfig(), args)
+
+case "watch-install":
+    cmdWatchInstall(loadConfig(), args)
+
+case "watch-uninstall":
+    cmdWatchUninstall(loadConfig(), args)
 
 case "__dock-sync":
     // 内部调试命令：只跑 dock_sync，把结果写进 `DOCKGROUP_DOCK_PLIST` 指定的文件。

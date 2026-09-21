@@ -193,6 +193,69 @@ for name in ('com.apple.dock-20260920-101010.plist',
         plistlib.dump({'persistent-apps': [], 'persistent-others': []}, f)
 " >/dev/null 2>&1
                       ;;
+            right)    cat > "$TMPHOME/groups.json" <<JSON
+{
+  "style": "graphite",
+  "groups": [
+    {
+      "name": "测试组",
+      "enabled": true,
+      "placement": "right",
+      "apps": []
+    }
+  ],
+  "material": "hud",
+  "layout": "row"
+}
+JSON
+                      ;;
+            applied)  # Python 侧预先构建好启动器 .app —— 它是输入，不是被测对象
+                      cat > "$TMPHOME/groups.json" <<JSON
+{
+  "style": "graphite",
+  "groups": [
+    {
+      "name": "测试组",
+      "enabled": true,
+      "placement": "left",
+      "apps": ["/System/Applications/Calculator.app"]
+    }
+  ],
+  "material": "hud",
+  "layout": "row"
+}
+JSON
+                      DOCKGROUP_HOME="$TMPHOME" "$PY" -c "
+import sys; sys.path.insert(0, '$REPO/scripts')
+from dockgroup import build_launcher_app, load_config, find_group, group_material, group_layout
+cfg = load_config(); g = find_group(cfg, '测试组')
+build_launcher_app(g, style=cfg.get('style'), material=group_material(cfg, g),
+                   layout=group_layout(cfg, g), seed=False)
+" >/dev/null 2>&1
+                      ;;
+            logged)   # 预置运行日志：面板几何 2 行 + 事件轨迹 45 行（验 -40 截断）
+                      cat > "$TMPHOME/groups.json" <<'JSON'
+{
+  "style": "graphite",
+  "groups": [
+    {
+      "name": "测试组",
+      "enabled": true,
+      "placement": "left",
+      "apps": []
+    }
+  ],
+  "material": "hud",
+  "layout": "row"
+}
+JSON
+                      mkdir -p "$TMPHOME/.cache"
+                      printf 'frame: (0, 0, 254, 72)\npanel: layout=row grid=1 size=254x72 cell=86\n' \
+                          > "$TMPHOME/.cache/测试组.launch.log"
+                      "$PY" -c "
+print('\n'.join(f'mouseDown hit item {i} -> /System/Applications/Calculator.app' for i in range(45)))
+" > "$TMPHOME/.cache/测试组.events.log"
+                      ;;
         esac
         # ⚠️ 两边都接 /dev/null：万一哪条命令读 stdin（如 add 无参数进交互模式），
         # 也不能在这里挂起等输入 —— EOF/非终端分支本身就是被测行为之一。
@@ -224,13 +287,19 @@ t = re.sub(r'<data>.*?</data>', '<data>X</data>', t, flags=re.S)
 sys.stdout.write(t)
 " >> "$out" 2>&1
         fi
+        # watch-install 在测试模式下写进隔离目录的 LaunchAgent
+        if [ -f "$TMPHOME/watch-test.plist" ]; then
+            echo "── watch-test.plist ──" >> "$out"
+            cat "$TMPHOME/watch-test.plist" >> "$out"
+        fi
     done
     report "$name" "$ra" "$rb"
 }
 
-# 像素对照：不算逐字节，只看 MAE 够不够小。
-pixel_report() {   # $1=名称  $2=参考 png  $3=待测 png
-    local mae
+# 像素对照：不算逐字节，只看 MAE 够不够小。$4=可选阈值（默认 PIXEL_MAX），
+# 给「字体光栅化引擎不同」这类结构性差异留口子（preview 对比图用 3.0）。
+pixel_report() {   # $1=名称  $2=参考 png  $3=待测 png  $4=阈值(可选)
+    local mae max="${4:-$PIXEL_MAX}"
     mae=$("$PY" - "$2" "$3" <<'PY'
 import sys
 from PIL import Image, ImageChops, ImageStat
@@ -247,11 +316,12 @@ PY
         fail=$((fail + 1))
         return
     fi
-    if "$PY" -c "import sys; sys.exit(0 if float('$mae') < $PIXEL_MAX else 1)"; then
-        printf "  ✅ %-30s MAE %.4f / 255\n" "$1" "$mae"
+    if "$PY" -c "import sys; sys.exit(0 if float('$mae') < $max else 1)"; then
+        printf "  ✅ %-30s MAE %.4f / 255%s\n" "$1" "$mae" \
+               "$([ "$max" != "$PIXEL_MAX" ] && printf "（阈值 %s）" "$max")"
         pass=$((pass + 1))
     else
-        printf "  ❌ %-30s MAE %s（阈值 ${PIXEL_MAX}）\n" "$1" "$mae"
+        printf "  ❌ %-30s MAE %s（阈值 %s）\n" "$1" "$mae" "$max"
         fail=$((fail + 1))
     fi
 }
@@ -526,12 +596,74 @@ run_pair_stateful "new：分组已存在" "$STYLE_ENV" "seeded" new 测试组 Ca
 run_pair_stateful "new：找不到 App" "$STYLE_ENV" "grouped" new 测试组2 没有这个App
 run_pair_stateful "new：用法提示" "$STYLE_ENV" "grouped" new 测试组2
 run_pair_stateful "new：交互模式要终端" "$STYLE_ENV" "grouped" new
+
+# preview / test / logs / watch-*。
+# preview 的对比图本身另在像素节比（case_preview_sheet，字体光栅化阈值放宽）。
+run_pair_stateful "preview" "$STYLE_ENV" "seeded" preview
+run_pair_stateful "preview：没有可预览的" "$STYLE_ENV" "grouped" preview
+run_pair_stateful "preview：不存在的组" "$STYLE_ENV" "grouped" preview 没有这个组
+run_pair_stateful "test：已构建" "$STYLE_ENV" "applied" test 测试组
+run_pair_stateful "test：还没构建" "$STYLE_ENV" "seeded" test 测试组
+run_pair_stateful "test：right 模式" "$STYLE_ENV" "right" test 测试组
+run_pair_stateful "test：没指定分组" "$STYLE_ENV" "grouped" test
+run_pair_stateful "test：没有的分组" "$STYLE_ENV" "grouped" test 没有这个组
+run_pair_stateful "logs：有日志" "$STYLE_ENV" "logged" logs 测试组
+run_pair_stateful "logs：还没有日志" "$STYLE_ENV" "seeded" logs 测试组
+run_pair_stateful "logs：没指定组名" "$STYLE_ENV" "grouped" logs
+run_pair_stateful "logs：没有的分组" "$STYLE_ENV" "grouped" logs 没有这个组
+run_pair_stateful "watch-install：写 plist" "$STYLE_ENV" "seeded" watch-install
+run_pair_stateful "watch-uninstall" "$STYLE_ENV" "seeded" watch-uninstall
 rm -rf "$TMPHOME"
 
 echo
 echo "── Dock 写入（比写出的配置字节，不碰真 Dock）──"
 case_dock_sync ""
 case_dock_sync "--keep-originals"
+
+# preview 对比图：两边各自跑 preview（seeded 输入），比拼出来的大图。
+# 文字光栅化引擎不同（FreeType vs CoreText），阈值放宽到 3.0 ——
+# 图标区域（Lanczos + 同源 mosaic）应当几乎一致，差异集中在文字行。
+case_preview_sheet() {
+    local T=/tmp/cmpprev
+    rm -rf "$T"; mkdir -p "$T"
+    for side in a b; do
+        rm -rf "$T/home"; mkdir -p "$T/home/测试组"
+        DOCKGROUP_HOME="$T/home" "$PY" -c "
+import sys; sys.path.insert(0, '$REPO/scripts')
+from dockgroup import jxa
+jxa('mkalias', '$T/home/测试组', '/System/Applications/Calculator.app')
+" >/dev/null 2>&1
+        cat > "$T/home/groups.json" <<'JSON'
+{
+  "style": "graphite",
+  "groups": [
+    {
+      "name": "测试组",
+      "enabled": true,
+      "placement": "left",
+      "apps": ["/System/Applications/Calculator.app"]
+    }
+  ],
+  "material": "hud",
+  "layout": "row"
+}
+JSON
+        if [ "$side" = a ]; then
+            DOCKGROUP_HOME="$T/home" "$PY" "$REPO/scripts/dockgroup.py" preview >/dev/null 2>&1
+            cp "$T/home/.cache/preview-all.png" "$T/py.png" 2>/dev/null
+        else
+            DOCKGROUP_HOME="$T/home" "$SW" preview >/dev/null 2>&1
+            cp "$T/home/.cache/preview-all.png" "$T/sw.png" 2>/dev/null
+        fi
+    done
+    if [ -f "$T/py.png" ] && [ -f "$T/sw.png" ]; then
+        pixel_report "preview：对比图" "$T/py.png" "$T/sw.png" 3.0
+    else
+        printf "  ❌ %-30s 有产物缺失\n" "preview：对比图"
+        fail=$((fail + 1))
+    fi
+    rm -rf "$T"
+}
 
 echo
 echo "── 像素对照（阈值 MAE < ${PIXEL_MAX}）──"
@@ -540,6 +672,7 @@ case_mosaic graphite
 case_mosaic paper
 case_mosaic glass-dark
 case_grab
+case_preview_sheet
 rm -rf "$PX"
 
 echo

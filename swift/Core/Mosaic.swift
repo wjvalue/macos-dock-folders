@@ -462,7 +462,12 @@ func loadBitmap(_ path: String, target: Int) -> Bitmap? {
 }
 
 func writePNG(_ bm: Bitmap, to path: String) {
-    let cs = CGColorSpaceCreateDeviceRGB()
+    writePNG(cgImageRGBA(bm), to: path)
+}
+
+/// Bitmap（非预乘 RGBA）→ CGImage。与 writePNG 的转换逻辑一致，供
+/// 需要把中间位图再画进 CGContext 的场景（contact sheet）复用。
+func cgImageRGBA(_ bm: Bitmap) -> CGImage {
     // 非预乘 → 预乘（CG 只吃预乘）
     var buf = [UInt8](repeating: 0, count: bm.px.count)
     for i in stride(from: 0, to: bm.px.count, by: 4) {
@@ -473,11 +478,16 @@ func writePNG(_ bm: Bitmap, to path: String) {
         buf[i + 3] = bm.px[i + 3]
     }
     let provider = CGDataProvider(data: Data(buf) as CFData)!
-    let img = CGImage(width: bm.size, height: bm.size, bitsPerComponent: 8,
-                      bitsPerPixel: 32, bytesPerRow: bm.size * 4, space: cs,
-                      bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-                      provider: provider, decode: nil, shouldInterpolate: false,
-                      intent: .defaultIntent)!
+    return CGImage(width: bm.size, height: bm.size, bitsPerComponent: 8,
+                   bitsPerPixel: 32, bytesPerRow: bm.size * 4,
+                   space: CGColorSpaceCreateDeviceRGB(),
+                   bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                   provider: provider, decode: nil, shouldInterpolate: false,
+                   intent: .defaultIntent)!
+}
+
+/// CGImage → PNG（任意尺寸；contact sheet 这类非方形画布用）。
+func writePNG(_ img: CGImage, to path: String) {
     let url = URL(fileURLWithPath: path)
     let dest = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil)!
     CGImageDestinationAddImage(dest, img, nil)
