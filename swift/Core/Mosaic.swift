@@ -159,6 +159,16 @@ struct Bitmap {
 
 /// 用 CoreGraphics 光栅化一段灰度绘制，返回 size×size 的 0-255 mask。
 /// 圆角矩形这类带抗锯齿的形状交给 CG 画，比自己写扫描线稳。
+///
+/// ⚠️ 方向语义（2026-09-21 实测钉死，别再翻案）：CG user 原点在**左下**，缓冲区
+/// 行 0 对应图像顶部 —— 画在 user y=a..b 的形状落在缓冲区行 S-b..S-a-1，相对
+/// PIL 画布是**上下翻转**的。panelBase 现有形状恰好全部垂直对称（底板圆角、
+/// 描边环；hairline/edge 闭包里另有手工翻转补偿），投影方向反了也被模糊+透明区
+/// 稀释到 MAE 里看不出来 —— 所以历史上不加翻转一直是对的。
+/// **不要在这里加全局翻转**：hairline/edge 会变成双重翻转（整圈错位 1 行、
+/// 156 通道的线全周差 150，实测 mosaic MAE 0.28 → 0.85）。
+/// 真要画不对称形状（如 manager 图标的强调色格子），在调用方自行镜像 Y，
+/// 见 makeManagerIcon。
 func grayMask(size: Int, _ draw: (CGContext) -> Void) -> [Double] {
     var buf = [UInt8](repeating: 0, count: size * size)
     buf.withUnsafeMutableBytes { raw in

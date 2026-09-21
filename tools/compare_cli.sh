@@ -613,6 +613,11 @@ run_pair_stateful "logs：没指定组名" "$STYLE_ENV" "grouped" logs
 run_pair_stateful "logs：没有的分组" "$STYLE_ENV" "grouped" logs 没有这个组
 run_pair_stateful "watch-install：写 plist" "$STYLE_ENV" "seeded" watch-install
 run_pair_stateful "watch-uninstall" "$STYLE_ENV" "seeded" watch-uninstall
+
+# gui：会真编译 manager 二进制（swiftc 十来秒）+ 打包签名。
+# 对比图另在像素节比（case_manager_icon）。
+run_pair_stateful "gui：打开管理窗口" "$STYLE_ENV" "seeded" gui
+run_pair_stateful "gui --rebuild：强制重建" "$STYLE_ENV" "seeded" gui --rebuild
 rm -rf "$TMPHOME"
 
 echo
@@ -665,6 +670,26 @@ JSON
     rm -rf "$T"
 }
 
+# 管理窗口图标：manager icon 是 graphite 底板 + 2×2 格子（右下强调色）——
+# 唯一靠 grayMask 画**不对称**形状的路径，单独立项盯死。
+case_manager_icon() {
+    local T=/tmp/cmpmi
+    rm -rf "$T"; mkdir -p "$T"
+    "$PY" -c "
+import sys; from pathlib import Path; sys.path.insert(0, '$REPO/scripts')
+from dockgroup import make_manager_icon
+make_manager_icon(Path('$T/py.png'))
+" >/dev/null 2>&1
+    "$SW" __make-manager-icon "$T/sw.png" >/dev/null 2>&1
+    if [ -f "$T/py.png" ] && [ -f "$T/sw.png" ]; then
+        pixel_report "manager 图标" "$T/py.png" "$T/sw.png"
+    else
+        printf "  ❌ %-30s 有产物缺失\n" "manager 图标"
+        fail=$((fail + 1))
+    fi
+    rm -rf "$T"
+}
+
 echo
 echo "── 像素对照（阈值 MAE < ${PIXEL_MAX}）──"
 rm -rf "$PX"; mkdir -p "$PX"
@@ -673,6 +698,7 @@ case_mosaic paper
 case_mosaic glass-dark
 case_grab
 case_preview_sheet
+case_manager_icon
 rm -rf "$PX"
 
 echo

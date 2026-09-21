@@ -42,9 +42,9 @@ func showHelp() {
       logs <组名>          查看运行日志（面板几何 + 事件轨迹）
       watch-install        监听分组文件夹变化自动重建（launchd）
       watch-uninstall      卸载监听
+      gui [--rebuild]      打开图形界面（分组管理窗口，改完即时预览）
 
-    还没搬（敲了会提示你去用 Python 版）：
-      gui（依赖 manager 图标绘制的像素级移植，单独一轮做）
+    迁移完成：全部子命令已是 Swift 实现（tools/compare_cli.sh 逐项对齐）。
 
     迁移进行中：两套实现并存，逐个命令对齐后再切换。
     """)
@@ -59,8 +59,8 @@ guard let cmd = rawArgs.first else {
 let args = Array(rawArgs.dropFirst())
 
 /// 还没搬过来的子命令，给出明确指引而不是含糊的「未知命令」。
-/// gui 压着 make_manager_icon 的像素级移植（PIL 画图标），值得单独一轮验证。
-let notYetPorted: Set<String> = ["gui"]
+/// gui 是最后一个搬完的（2026-09-21）：20/20，迁移期结束。
+let notYetPorted: Set<String> = []
 
 switch cmd {
 case "--version", "-v", "version":
@@ -125,6 +125,19 @@ case "watch-install":
 
 case "watch-uninstall":
     cmdWatchUninstall(loadConfig(), args)
+
+case "gui":
+    cmdGui(loadConfig(), args)
+
+case "__make-manager-icon":
+    // 内部调试命令：画管理窗口图标。对照测试拿它和 Python 的 make_manager_icon
+    // 比像素 —— mosaic 那套方法论的最后一块拼图。
+    guard let out = args.first else {
+        FileHandle.standardError.write(
+            "用法：__make-manager-icon <out.png>\n".data(using: .utf8)!)
+        exit(2)
+    }
+    makeManagerIcon(out: URL(fileURLWithPath: out))
 
 case "__dock-sync":
     // 内部调试命令：只跑 dock_sync，把结果写进 `DOCKGROUP_DOCK_PLIST` 指定的文件。
