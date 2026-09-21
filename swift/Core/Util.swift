@@ -18,3 +18,13 @@ func pad(_ s: String, _ width: Int) -> String {
 func pyLess(_ a: String, _ b: String) -> Bool {
     Array(a.utf8).lexicographicallyPrecedes(Array(b.utf8))
 }
+
+/// 对应 Python 的 `SystemExit("...")`。
+///
+/// 为什么要专门一个类型：`refresh_groups` 会**逐个分组**构建、把失败的分组
+/// 「跳过」而不是让整个命令挂掉（比如某个分组的文件夹被删了，其它分组照常刷新）。
+/// 用 `exit(1)` 就没法在中途捞回来，所以底层构建函数改成抛错，由调用方决定。
+struct DgError: Error {
+    let message: String
+    init(_ message: String) { self.message = message }
+}

@@ -46,7 +46,7 @@ let args = Array(rawArgs.dropFirst())
 
 /// 还没搬过来的子命令，给出明确指引而不是含糊的「未知命令」。
 let notYetPorted: Set<String> = [
-    "apply", "rebuild", "style", "layout",
+    "apply", "style", "layout",
     "add", "del", "open", "remove", "clean", "restore",
     "new", "preview", "watch-install", "watch-uninstall",
     "test", "logs", "gui",
@@ -67,6 +67,36 @@ case "doctor":
 
 case "init":
     cmdInit(args)
+
+case "rebuild":
+    cmdRebuild(loadConfig(), args)
+
+case "__build-group":
+    // 内部调试命令：只构建一个分组，**不重启 Dock**。
+    // 对照测试必须用它 —— refresh_groups 会 killall Dock，从沙箱里跑会把当前
+    // 命令连带打死（exit 137、零输出，看着像没执行），根本拿不到结果。
+    guard let groupName = args.first else {
+        FileHandle.standardError.write("用法：__build-group <组名>\n".data(using: .utf8)!)
+        exit(2)
+    }
+    let dbgCfg = loadConfig()
+    guard let dbgGroup = dbgCfg.group(named: groupName) else {
+        FileHandle.standardError.write("找不到分组「\(groupName)」\n".data(using: .utf8)!)
+        exit(1)
+    }
+    do {
+        if dbgGroup.placement == "right" {
+            try buildGroup(dbgGroup, style: dbgCfg.style, seed: false)
+        } else {
+            try buildLauncherApp(dbgGroup, style: dbgCfg.style,
+                                 material: groupMaterial(dbgCfg, dbgGroup),
+                                 layout: groupLayout(dbgCfg, dbgGroup), seed: false)
+        }
+        print("\(groupName)  ok")
+    } catch let e as DgError {
+        FileHandle.standardError.write("\(e.message)\n".data(using: .utf8)!)
+        exit(1)
+    }
 
 case "__dump-config":
     // 内部调试命令：把读到的配置重新序列化打出来。

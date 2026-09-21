@@ -36,7 +36,15 @@ tools/compare_cli.sh    # 跑对照测试
 | `list` | ✅ 对照通过（32 行逐字符一致） |
 | `doctor` | ✅ 对照通过（21 行；异常分支另有两项覆盖） |
 | `init` | ✅ 对照通过（40 行，含**写出的 groups.json** 逐字节比对） |
-| 其余 17 个 | ⬜ 未搬迁 —— 会明确提示去用 Python 版 |
+| `rebuild` | ✅ 产物对照通过（Info.plist / bundle 结构 / 合成图标） |
+| 其余 16 个 | ⬜ 未搬迁 —— 会明确提示去用 Python 版 |
+
+`rebuild` 是第一个**真正产出 `.app`** 的命令。它的构建链路（`build_group` →
+`build_launcher_app` → 图标 → icns → Info.plist → 签名）已经能和 Python 版
+产出等价的结果。
+
+> ⚠️ `rebuild` / `apply` 会 `killall Dock`，从沙箱里直接跑会把当前命令连带打死
+> （exit 137、零输出）。对照测试因此走内部命令 `__build-group`：只构建、不重启 Dock。
 
 基础模块里 `Core/Config.swift`（groups.json 读入再序列化）也已逐字节对齐。
 
@@ -48,18 +56,24 @@ build.sh              编译脚本（把仓库位置烧进二进制）
 Core/
   Paths.swift         路径常量（照抄 dockgroup.py 顶部那组定义）
   JSON.swift          有序 JSON 的解析与序列化
+  Plist.swift         保序 XML plist（Info.plist 的键顺序不能漂）
   Config.swift        groups.json 读写、分组级覆盖解析
   Dock.swift          Dock plist 读取、别名解析、分组文件夹扫描
   Quarantine.swift    隔离属性检测与清理、结束常驻启动器
+  Hash.swift          MD5 / SHA256（CryptoKit）
   Mosaic.swift        分组图标合成（从 tools/mosaic_poc 移植，已对齐 Pillow）
   AppIcon.swift       从 .app 提取图标（直接调 NSWorkspace，不走 JXA）
   Icns.swift          PNG → .icns
+  AppTile.swift       Dock tile 构造（GUID / bookmark）
+  Group.swift         建别名、收成员、build_group
+  LauncherApp.swift   构建启动器 .app（编译 / 图标 / plist / 签名）
   Sh.swift            跑外部命令
-  Util.swift          pad（按字符数补位）、pyLess（码点序比较）
+  Util.swift          pad（按字符数补位）、pyLess（码点序比较）、DgError
 Commands/
   List.swift          dg list
   Doctor.swift        dg doctor
   Init.swift          dg init
+  Rebuild.swift       dg rebuild
 ```
 
 `tools/compare_cli.sh` 覆盖**三类**场景：

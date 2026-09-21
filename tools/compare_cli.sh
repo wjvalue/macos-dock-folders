@@ -190,6 +190,81 @@ for a in apps:
     done
 }
 
+# .app 构建：两边各构建一次，比对产物。
+#
+# ⚠️ 不能跑 `dg rebuild` —— 它会 killall Dock，从沙箱里跑会把当前命令连带打死
+# （exit 137、零输出）。所以用内部命令 `__build-group`：只构建，不重启 Dock。
+#
+# ⚠️ Info.plist 里的 CFBundleVersion 必须**归一化掉再比**。它是按内容摘要算的
+# （sha256(plist + 图标 + 签名前的二进制)），而两边的图标 PNG 有亚像素差异、
+# swiftc 产物还带 LC_UUID 非确定性 —— 版本号注定不同。结构对了才是重点。
+case_launcher_app() {
+    local T=/tmp/cmpapp
+    rm -rf "$T"; mkdir -p "$T/测试组"
+    local i1="$ICONS/App Store-1786589515.png" i2="$ICONS/Calculator-1786589515.png"
+    for f in "$i1" "$i2"; do
+        [ -f "$f" ] || { echo "  ·  .app 构建：跳过（测试图标不存在）"; return; }
+    done
+
+    # 输入：分组别名（用 Python 侧建，它是输入不是被测对象）+ 配置
+    DOCKGROUP_HOME="$T" "$PY" -c "
+import sys; sys.path.insert(0, '$REPO/scripts')
+from dockgroup import jxa
+jxa('mkalias', '$T/测试组', '/System/Applications/Calculator.app', '/System/Applications/Notes.app')
+" >/dev/null 2>&1
+    cat > "$T/groups.json" <<'JSON'
+{
+  "style": "graphite",
+  "groups": [{"name": "测试组", "enabled": false, "placement": "left", "apps": []}],
+  "material": "hud",
+  "layout": "row"
+}
+JSON
+
+    local PYAPP=/tmp/cmpapp-py SWAPP=/tmp/cmpapp-sw
+    rm -rf "$PYAPP" "$SWAPP"; mkdir -p "$PYAPP" "$SWAPP"
+
+    DOCKGROUP_HOME="$T" "$PY" -c "
+import sys; sys.path.insert(0, '$REPO/scripts')
+from dockgroup import build_launcher_app, load_config, find_group, group_material, group_layout
+cfg = load_config(); g = find_group(cfg, '测试组')
+build_launcher_app(g, style=cfg.get('style'), material=group_material(cfg, g),
+                   layout=group_layout(cfg, g), seed=False)
+" >/dev/null 2>&1
+    cp -R "$T/.apps/测试组.app" "$PYAPP/" 2>/dev/null
+    cp "$T/.cache/测试组.png" "$PYAPP/mosaic.png" 2>/dev/null
+
+    # 清掉产物重来，让 Swift 从零构建（不要命中 Python 留下的缓存）
+    rm -rf "$T/.apps" "$T/.cache"
+    DOCKGROUP_HOME="$T" "$SW" __build-group 测试组 >/dev/null 2>&1
+    cp -R "$T/.apps/测试组.app" "$SWAPP/" 2>/dev/null
+    cp "$T/.cache/测试组.png" "$SWAPP/mosaic.png" 2>/dev/null
+
+    # ① Info.plist：抹掉两个版本键后逐字节比
+    local norm="$PY -c \"
+import re, sys
+t = open(sys.argv[1], encoding='utf-8').read()
+t = re.sub(r'<key>CFBundleVersion</key>\\\\s*<string>[^<]*</string>', '<key>CFBundleVersion</key><string>X</string>', t)
+t = re.sub(r'<key>CFBundleShortVersionString</key>\\\\s*<string>[^<]*</string>', '<key>CFBundleShortVersionString</key><string>X</string>', t)
+sys.stdout.write(t)
+\""
+    eval "$norm \"$PYAPP/测试组.app/Contents/Info.plist\"" > "$A" 2>&1
+    eval "$norm \"$SWAPP/测试组.app/Contents/Info.plist\"" > "$B" 2>&1
+    report ".app：Info.plist（版本键归一化）" 0 0
+
+    # ② bundle 结构：有哪些文件
+    (cd "$PYAPP/测试组.app" && find . -type f | sort) > "$A" 2>&1
+    (cd "$SWAPP/测试组.app" && find . -type f | sort) > "$B" 2>&1
+    report ".app：bundle 结构" 0 0
+
+    # ③ 合成图标：比像素
+    [ -f "$PYAPP/mosaic.png" ] && [ -f "$SWAPP/mosaic.png" ] \
+        && pixel_report ".app：合成图标" "$PYAPP/mosaic.png" "$SWAPP/mosaic.png" \
+        || { printf "  ❌ %-30s 有产物缺失\n" ".app：合成图标"; fail=$((fail + 1)); }
+
+    rm -rf "$T" "$PYAPP" "$SWAPP"
+}
+
 echo "Python ⇄ Swift 对照"
 echo "── 文本输出：正常路径 ──"
 run_pair "list" "" list
@@ -218,6 +293,10 @@ case_mosaic paper
 case_mosaic glass-dark
 case_grab
 rm -rf "$PX"
+
+echo
+echo "── .app 构建（用 __build-group，不触发 killall Dock）──"
+case_launcher_app
 
 echo
 if [ "$fail" -eq 0 ]; then
