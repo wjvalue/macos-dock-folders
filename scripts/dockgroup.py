@@ -859,6 +859,21 @@ def launcher_binary(force=False) -> Path:
     return cached
 
 
+def bundle_engine_resources(app: Path) -> Path:
+    """把引擎运行时资源复制到 App 内，并返回 Resources 目录。
+
+    启动器和管理窗口都可能在仓库移动后继续运行；资源放进 bundle 后，运行时只依赖
+    用户自己的配置目录，不再依赖构建机上的 `SCRIPT_DIR`。
+    """
+    resources = app / "Contents/Resources"
+    resources.mkdir(parents=True, exist_ok=True)
+    for relative in ("dockgroup.py", "launcher/main.swift", "manager/main.swift"):
+        destination = resources / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(SCRIPT_DIR / relative, destination)
+    return resources
+
+
 def build_launcher_app(g, style=DEFAULT_STYLE, force=False,
                        material=DEFAULT_MATERIAL, layout=DEFAULT_LAYOUT, seed=None):
     """构建启动器 App：拼贴图标 + Swift 二进制 + Info.plist。
@@ -867,7 +882,6 @@ def build_launcher_app(g, style=DEFAULT_STYLE, force=False,
     所以往文件夹里加/删 App 只需 rebuild 图标，不必重编译。
     """
     name = g["name"]
-    folder = BASE / name
     _, mosaic, ok, missing = build_group(g, style=style, seed=seed)
 
     binary = launcher_binary(force=force)
@@ -877,6 +891,10 @@ def build_launcher_app(g, style=DEFAULT_STYLE, force=False,
     info = app / "Contents/Info.plist"
     exe.parent.mkdir(parents=True, exist_ok=True)
     icon.parent.mkdir(parents=True, exist_ok=True)
+
+    # 把运行时需要的脚本和 Swift 源码放进 bundle。启动器不能依赖构建机器上的仓库路径，
+    # 否则用户移动仓库、把 `.apps` 整体迁移到另一台机器后，拖放回调会静默失效。
+    bundle_resources = bundle_engine_resources(app)
 
     plist = {
         "CFBundleExecutable": "DockGroupLauncher",
@@ -891,16 +909,11 @@ def build_launcher_app(g, style=DEFAULT_STYLE, force=False,
         "LSMinimumSystemVersion": "12.0",
         "LSUIElement": True,
         "NSHighResolutionCapable": True,
-        "DockGroupFolder": str(folder),
         "DockGroupName": name,
-        "DockGroupLogDir": str(CACHE),
         "DockGroupMaterial": material,
         # 网格布局模式（auto / row / 数字）。启动器按它决定列数，
         # 见 main.swift 的 columns(for:layout:)。进内容摘要 → 改了会重写 bundle。
         "DockGroupLayout": str(layout),
-        # 启动器收到拖放后要回调本脚本；GUI 进程的 PATH 只有 /usr/bin:/bin，
-        # 不能指望 dg 在 PATH 里，直接把绝对路径塞进去。
-        "DockGroupScript": str(SCRIPT_DIR / "dockgroup.py"),
         # 声明能处理 .app → 拖 App 到 Dock 图标上时 tile 会高亮成放置目标。
         # LSHandlerRank=Alternate：不当默认处理器（双击 App 仍由系统启动），
         # 只作为「可以接收」的候选，保证 Dock 拖放会高亮。
@@ -926,7 +939,10 @@ def build_launcher_app(g, style=DEFAULT_STYLE, force=False,
     core = {k: v for k, v in plist.items() if k != "CFBundleVersion"}
     digest = hashlib.sha256(
         plistlib.dumps(core) + mosaic.read_bytes()
-        + binary.read_bytes()).hexdigest()
+        + binary.read_bytes()
+        + (bundle_resources / "dockgroup.py").read_bytes()
+        + (bundle_resources / "launcher/main.swift").read_bytes()
+        + (bundle_resources / "manager/main.swift").read_bytes()).hexdigest()
     plist["CFBundleVersion"] = digest[:8]
     plist["CFBundleShortVersionString"] = "1.0." + digest[:6]
 
@@ -1023,8 +1039,7 @@ def build_manager_app(force=False) -> Path:
     和 build_launcher_app 的差别：这是有 Dock 图标、能被双击的普通 App，
     所以不设 LSUIElement。
 
-    DockGroupScript 必须写绝对路径：GUI 进程的 PATH 只有 /usr/bin:/bin，
-    里面也没有 dg 这个短命令，只能靠 Info.plist 把引擎位置告诉它。
+    引擎脚本和源码随管理窗口一起放进 bundle；GUI 进程不依赖构建机上的仓库路径。
     """
     binary = manager_binary(force=force)
     app = APPS / "DockGroup.app"
@@ -1033,6 +1048,9 @@ def build_manager_app(force=False) -> Path:
     info = app / "Contents/Info.plist"
     exe.parent.mkdir(parents=True, exist_ok=True)
     icon.parent.mkdir(parents=True, exist_ok=True)
+
+    # 管理窗口和启动器使用同一份可迁移引擎资源，避免 GUI 仍然绑死仓库路径。
+    bundle_resources = bundle_engine_resources(app)
 
     icon_png = make_manager_icon(CACHE / "manager-icon.png")
 
@@ -1050,13 +1068,15 @@ def build_manager_app(force=False) -> Path:
         # 没有它，SwiftUI 的 @main App 在 bundle 里不会建出 NSApplication，
         # 表现是「进程起来了但没窗口」。
         "NSPrincipalClass": "NSApplication",
-        "DockGroupScript": str(SCRIPT_DIR / "dockgroup.py"),
     }
 
     # 图标进摘要：只改画图逻辑不重打包的话，Dock 里还是旧图标。
     digest = hashlib.sha256(
         plistlib.dumps(plist) + binary.read_bytes()
-        + icon_png.read_bytes()).hexdigest()
+        + icon_png.read_bytes()
+        + (bundle_resources / "dockgroup.py").read_bytes()
+        + (bundle_resources / "launcher/main.swift").read_bytes()
+        + (bundle_resources / "manager/main.swift").read_bytes()).hexdigest()
     stamp = CACHE / "manager.bundle-stamp"
     if (force or not exe.exists() or not stamp.exists()
             or stamp.read_text().strip() != digest):
@@ -2311,11 +2331,16 @@ def cmd_clean(cfg, args):
 
 
 def cmd_watch_install(cfg, args):
+    # launchd 没有 bundle 上下文，不能让它依赖当前仓库路径。管理窗口 bundle 是
+    # `<base>/.apps/DockGroup.app`，其中带有完整引擎副本，且和配置目录一起迁移。
+    manager_app = build_manager_app()
+    bundled_script = manager_app / "Contents/Resources/dockgroup.py"
     AGENT_PLIST.parent.mkdir(parents=True, exist_ok=True)
     AGENT_PLIST.write_bytes(plistlib.dumps({
         "Label": AGENT_LABEL,
-        "ProgramArguments": ["/usr/bin/python3", str(SCRIPT_DIR / "dockgroup.py"),
+        "ProgramArguments": ["/usr/bin/python3", str(bundled_script),
                              "rebuild", "--quiet"],
+        "EnvironmentVariables": {"DOCKGROUP_HOME": str(BASE)},
         "WatchPaths": [str(BASE / g["name"]) for g in cfg["groups"]],
         "RunAtLoad": False,
         "ThrottleInterval": 5,

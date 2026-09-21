@@ -7,8 +7,9 @@
 // 文件夹放进左侧 App 区后，点击只会打开 Finder 窗口，不会弹网格。
 // 换成真正的 App，点击行为就完全由自己控制，而且 App tile 在左侧是原生支持的。
 //
-// 分组内容在运行时从 Info.plist 的 DockGroupFolder 指向的文件夹里现读现解析，
-// 所以往文件夹里加/删 App 只需 rebuild 图标，不用重编译。
+// 分组内容在运行时从用户配置目录里的同名文件夹现读现解析，所以往文件夹里加/删 App
+// 只需 rebuild 图标，不用重编译。路径由 bundle 所在的 `.apps` 目录反推，避免把某台
+// 机器的绝对路径写进产物。
 
 import Cocoa
 
@@ -162,9 +163,9 @@ func geometry(for layout: String) -> PanelGeometry {
 
 /// 按「应用数 + 布局模式」推导网格列数。
 ///
-/// 布局模式来自 Info.plist 的 `DockGroupLayout`，由 dockgroup.py 按 groups.json
+/// 布局模式来自 Info.plist 的 `DockGroupLayout`，由 Swift 引擎按 groups.json
 /// 的 `layout` 字段写入。和 material 一样是「分组覆盖全局」：分组自己写了用分组的，
-/// 没写才退回顶层默认值（见 dockgroup.py 的 group_layout()）。
+/// 没写才退回顶层默认值。
 ///
 ///   row   —— **默认**。旧的长条样式：能铺一行就铺一行，放不下才按 kMaxCols 换行
 ///   dock / dock-name —— 同样单行铺开（只是格子尺寸不同，见 geometry(for:)）
@@ -251,7 +252,7 @@ func trace(_ msg: String) {
 // kAEOpenDocuments 苹果事件，App 收到的就是被拖文件的 URL/路径。
 //
 // 所以「拖 App 到分组图标上加入分组」是可以做的：启动器截获这个事件，
-// 调 Python 脚本走和 `dg add` 完全一样的链路（建别名 → 刷新图标 → 重启 Dock）。
+// 调 Swift 引擎走和 `dg add` 完全一样的链路（建别名 → 刷新图标 → 重启 Dock）。
 // 拖到展开的网格面板上同理（面板注册了 fileURL 拖放）。
 // 来源必须是 Finder 里的 App 文件（如 /Applications 窗口），不能是 Dock 图标本身。
 
@@ -523,26 +524,47 @@ final class Delegate: NSObject, NSApplicationDelegate {
     private var groupName: String {
         (Bundle.main.object(forInfoDictionaryKey: "DockGroupName") as? String) ?? "group"
     }
+
+    /// 解析当前用户的配置根目录。
+    ///
+    /// `.apps/<组名>.app` 是引擎的固定目录结构；优先从 bundle 反推可保留
+    /// `DOCKGROUP_HOME` 的自定义位置，直接双击被单独复制的 App 时再退回默认目录。
+    private var baseDirectory: String {
+        if let override = ProcessInfo.processInfo.environment["DOCKGROUP_HOME"],
+           !override.isEmpty {
+            return (override as NSString).expandingTildeInPath
+        }
+        let appsDirectory = Bundle.main.bundleURL.deletingLastPathComponent()
+        if appsDirectory.lastPathComponent == ".apps" {
+            return appsDirectory.deletingLastPathComponent().path
+        }
+        return NSHomeDirectory() + "/Dock Groups"
+    }
+
     private var folderPath: String {
-        (Bundle.main.object(forInfoDictionaryKey: "DockGroupFolder") as? String) ?? ""
+        URL(fileURLWithPath: baseDirectory).appendingPathComponent(groupName).path
     }
     private var logDir: String {
-        (Bundle.main.object(forInfoDictionaryKey: "DockGroupLogDir") as? String)
-            ?? (NSHomeDirectory() + "/Dock Groups/.cache")
+        URL(fileURLWithPath: baseDirectory).appendingPathComponent(".cache").path
     }
     private var materialName: String {
         (Bundle.main.object(forInfoDictionaryKey: "DockGroupMaterial") as? String) ?? "menu"
     }
     /// 网格布局模式：row（默认，长条）/ auto（按应用数自适应）/ 数字（指定列数）/
     /// dock（和 Dock 条等高、不画名字）/ dock-name（同意但让 8pt 给名字）。
-    /// 缺失时按 row 处理 —— 兜底要和 dockgroup.py 的 DEFAULT_LAYOUT 一致。
+    /// 缺失时按 row 处理 —— 兜底要和 Swift 引擎的默认值一致。
     private var layoutMode: String {
         (Bundle.main.object(forInfoDictionaryKey: "DockGroupLayout") as? String) ?? "row"
     }
-    /// dockgroup.py 的绝对路径。GUI 进程的 PATH 只有 /usr/bin:/bin，
-    /// 不能指望 `dg` 在 PATH 里，所以由 Info.plist 直接塞绝对路径进来。
-    private var scriptPath: String {
-        (Bundle.main.object(forInfoDictionaryKey: "DockGroupScript") as? String) ?? ""
+    /// 找到 bundle 自带的 Swift 引擎。
+    ///
+    /// 引擎和启动器一起分发，拖放回调不再启动 Python，也不依赖构建机路径。
+    private var engineURL: URL? {
+        if let override = ProcessInfo.processInfo.environment["DOCKGROUP_ENGINE"],
+           !override.isEmpty {
+            return URL(fileURLWithPath: (override as NSString).expandingTildeInPath)
+        }
+        return Bundle.main.url(forResource: "DockGroupEngine", withExtension: nil)
     }
 
     func applicationDidFinishLaunching(_ note: Notification) {
@@ -708,22 +730,28 @@ final class Delegate: NSObject, NSApplicationDelegate {
         runAdd(paths)
     }
 
-    /// 跑 dockgroup.py add，走和命令行完全一样的链路（建别名 → 刷新图标 → 重启 Dock）。
+    /// 调用随 App 分发的 Swift 引擎，走和命令行完全一样的链路（建别名 → 刷新图标）。
     private func runAdd(_ paths: [String]) {
-        guard !scriptPath.isEmpty else {
-            trace("add aborted: DockGroupScript missing in Info.plist")
+        guard let engine = engineURL else {
+            trace("add aborted: bundled Swift engine is missing")
             return
         }
         let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        task.arguments = [scriptPath, "add", groupName] + paths
+        task.executableURL = engine
+        task.arguments = ["add", groupName] + paths
+        var environment = ProcessInfo.processInfo.environment
+        environment["DOCKGROUP_HOME"] = baseDirectory
+        if let resources = Bundle.main.resourceURL {
+            environment["DOCKGROUP_SOURCE_ROOT"] = resources.appendingPathComponent("engine-resources").path
+        }
+        task.environment = environment
         let pipe = Pipe()
         task.standardOutput = pipe
         task.standardError = pipe
         do {
             try task.run()
         } catch {
-            trace("add failed to spawn python: \(error.localizedDescription)")
+            trace("add failed to spawn engine: \(error.localizedDescription)")
             return
         }
         task.terminationHandler = { [weak self] t in

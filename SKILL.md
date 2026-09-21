@@ -25,14 +25,12 @@ Stack 的弹窗逻辑和 tile 所在区域绑定，**没有任何 plist 字段�
 
 ## 现成工具
 
-本仓库的 `scripts/dockgroup.py`（配置 `~/Dock Groups/groups.json`，可用 `DOCKGROUP_HOME` 覆盖）。
+本仓库的 `scripts/engine/main.swift`（配置 `~/Dock Groups/groups.json`，可用 `DOCKGROUP_HOME` 覆盖）。
 
 **先装一次短命令**，之后所有操作都用 `dg`，不用再敲长路径：
 
 ```bash
-mkdir -p ~/.local/bin
-printf '#!/bin/bash\nexec /usr/bin/python3 "%s/scripts/dockgroup.py" "$@"\n' "$PWD" > ~/.local/bin/dg
-chmod +x ~/.local/bin/dg          # 确认 ~/.local/bin 在 PATH 里
+bash tools/install.command       # 编译 Swift 引擎并安装 dg
 ```
 
 > **装不上 / 打不开时先看这条**：如果源码是从 zip 下载来的（不是 `git clone`），
@@ -171,8 +169,9 @@ dg list / style / layout / open / test / logs / remove / clean / watch-install /
    - `swiftc -swift-version 5 -O -o <app>/Contents/MacOS/<exe> main.swift -framework Cocoa`，
      CLT 自带，不需要 Xcode。源文件必须叫 `main.swift`（顶层代码）。
    - `Info.plist`：`LSUIElement=true`、`CFBundlePackageType=APPL`、`CFBundleIconFile=AppIcon`，
-     并把分组文件夹路径塞进自定义键（如 `DockGroupFolder`），App 运行时现读
-     → 内容变化不用重编译，只重建图标。
+     分组名写进自定义键，文件夹路径由 App 位于 `<base>/.apps` 的 bundle 位置反推，
+     再在运行时现读 → 内容变化不用重编译，只重建图标。引擎脚本和 Swift 源码放进
+     `Contents/Resources/`，不把构建机绝对路径写进产物。
    - 编译后 `codesign --force --sign - <app>` + `lsregister -f <app>`。
    - **面板层级陷阱（最容易白忙一场）**：`NSPanel.isFloatingPanel = true` 会把 `level`
      **重置为 3**（NSFloatingWindowLevel），而 Dock 的层级是
@@ -277,8 +276,8 @@ dg list / style / layout / open / test / logs / remove / clean / watch-install /
     - **同一个拖放事件会被送两次**（实测相隔 7 秒），光靠短合并窗口挡不住：
       要按「同一批路径 + 10 秒内」去重；并且让 `dg add` 在**没有新增**时直接返回、
       不刷新不重启 Dock，这样重复事件退化成廉价空操作。
-    - 启动器要回调 Python 脚本，脚本绝对路径由 Info.plist 的
-      `DockGroupScript` 传进去（GUI 进程 PATH 只有 `/usr/bin:/bin`，别指望 `dg`）。
+    - 启动器要回调引擎，二进制从 bundle 的 `Contents/Resources/DockGroupEngine` 读取；
+      GUI 进程 PATH 只有 `/usr/bin:/bin`，不能依赖 `dg` 或构建机路径。
 
 14. **面板「四角有尖尖的一块」= 圆角只裁到了 contentView**（用户直接反馈的坑）：
     - `NSVisualEffectView.layer.cornerRadius` + `masksToBounds` 只裁得到**视图自己
@@ -433,17 +432,14 @@ dg list / style / layout / open / test / logs / remove / clean / watch-install /
 
 ## 环境须知
 
-- 用 `/usr/bin/python3`。**Pillow 不是系统自带的**（2026-09-20 实测：加 `-s` 禁掉
-  user site 后 `import PIL` 直接 ModuleNotFoundError），得先
-  `/usr/bin/python3 -m pip install --user Pillow` 装一次。装进的是 **CLT 那个
-  Python 的 user site**（`~/Library/Python/3.9/lib/python/site-packages`），
-  所以 Homebrew / venv / 托管 Python 都读不到 —— 解释器必须写死，不能换。
-- **判断一个命令行工具是「系统自带」还是「CLT 提供」的判据**（2026-09-21 实测，三条互证）：
+- 运行引擎是 Swift；首次安装由 `tools/install.command` 用 `swiftc` 编译，运行时不需要
+  Python 或 Pillow。`tools/readme_assets.py` 仅用于开发期重新生成 README 配图。
+ - **判断一个命令行工具是「系统自带」还是「CLT 提供」的判据**（2026-09-21 实测，三条互证）：
   ① `xcrun -f <tool>`：解析回 `/usr/bin/<tool>` 自身 = 系统自带；解析到
   `/Library/Developer/CommandLineTools/...` = CLT 提供（对照：`xcrun -f python3` → CLT 路径）。
   ② 直接看 `/Library/Developer/CommandLineTools/usr/bin/` 里有没有它。
   ③ 系统 shim 的硬链接数很高（`/usr/bin/python3` 是 78），独立二进制是 1。
-  **实测结论：只有 `swiftc` 和 `python3` 来自 CLT，`codesign` / `iconutil` / `sips` 都是系统自带。**
+  **实测结论：`swiftc` 来自 CLT，`codesign` / `iconutil` / `sips` 都是系统自带。**
   别再把后者说成「随 CLT 提供」—— 它们真缺了说明系统异常，装 CLT 解决不了。
 - macOS 26 已移除 `/System/Library/Fonts/PingFang.ttc`；
   中文渲染改用 `/System/Library/Fonts/Hiragino Sans GB.ttc`（index 2 = W6）。
@@ -483,4 +479,4 @@ dg list / style / layout / open / test / logs / remove / clean / watch-install /
 | 想先看面板长什么样再动系统 | `DOCKGROUP_RENDER=/tmp/x.png <组名>.app/Contents/MacOS/DockGroupLauncher`，直接出 PNG，不动 Dock |
 | 图标没跟着文件夹内容变 | `rebuild`；装了 watch 看 `launchctl list \| grep dockgroup` |
 | Dock 条目被系统丢弃 | `restore` 回滚，改手动把 App 拖回 Dock |
-| 想彻底撤销 | `dockgroup.py restore` |
+| 想彻底撤销 | `dg restore` |

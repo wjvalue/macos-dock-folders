@@ -8,7 +8,7 @@
 // 这个窗口把三件事摊在一屏里。
 //
 // 它不是引擎的替代品：会改配置的动作（增删、应用、恢复）一律转发给
-// scripts/dockgroup.py，和命令行共用同一套逻辑，两边不会各说各话。
+// 随 App 分发的 Swift 引擎，和命令行共用同一套逻辑，两边不会各说各话。
 // 只有「外观」三项是直接写 groups.json 的 —— 为了能即时预览，不至于每拖一下
 // 滑块就重启一次 Dock。改完点「应用到 Dock」才真正落地。
 //
@@ -24,10 +24,15 @@ import UniformTypeIdentifiers
 enum P {
     static let home = FileManager.default.homeDirectoryForCurrentUser
 
-    /// 与 dockgroup.py 的 BASE 保持同一口径（DOCKGROUP_HOME > ~/Dock Groups）。
+    /// 与引擎保持同一口径。管理窗口位于 `<base>/.apps/DockGroup.app` 时，
+    /// 从 bundle 反推自定义配置目录，避免把构建机的绝对路径写进 Info.plist。
     static let base: URL = {
         if let s = ProcessInfo.processInfo.environment["DOCKGROUP_HOME"], !s.isEmpty {
             return URL(fileURLWithPath: (s as NSString).expandingTildeInPath)
+        }
+        let appsDirectory = Bundle.main.bundleURL.deletingLastPathComponent()
+        if appsDirectory.lastPathComponent == ".apps" {
+            return appsDirectory.deletingLastPathComponent()
         }
         return home.appendingPathComponent("Dock Groups")
     }()
@@ -35,18 +40,15 @@ enum P {
     static let config = base.appendingPathComponent("groups.json")
     static let cache = base.appendingPathComponent(".cache")
 
-    /// 引擎脚本的绝对路径。GUI 进程的 PATH 只有 /usr/bin:/bin，
-    /// 不能指望 dg 在 PATH 里 —— 构建时把绝对路径写进 Info.plist，
-    /// 和 launcher 是同一套做法。环境变量优先，方便直接跑二进制调试。
-    static let script: URL = {
-        if let s = ProcessInfo.processInfo.environment["DOCKGROUP_SCRIPT"], !s.isEmpty {
-            return URL(fileURLWithPath: s)
+    /// 找到 bundle 内随应用分发的 Swift 引擎。环境变量优先，方便直接跑二进制调试。
+    static let engine: URL = {
+        if let s = ProcessInfo.processInfo.environment["DOCKGROUP_ENGINE"], !s.isEmpty {
+            return URL(fileURLWithPath: (s as NSString).expandingTildeInPath)
         }
-        if let s = Bundle.main.object(forInfoDictionaryKey: "DockGroupScript") as? String,
-           !s.isEmpty {
-            return URL(fileURLWithPath: s)
+        if let bundled = Bundle.main.url(forResource: "DockGroupEngine", withExtension: nil) {
+            return bundled
         }
-        return home.appendingPathComponent("Dock Groups/dockgroup.py")
+        return home.appendingPathComponent(".local/bin/dg")
     }()
 
     static func mosaic(_ group: String) -> URL {
@@ -55,7 +57,7 @@ enum P {
 }
 
 // ─── 选项表 ────────────────────────────────────────────────
-// 和 dockgroup.py 的 STYLES / launcher 的 material(named:) 一一对应。
+// 和引擎 / launcher 的 material(named:) 一一对应。
 // 改任何一边都要同步另外两边。
 
 let kStyles: [(String, String)] = [
@@ -358,7 +360,7 @@ final class AppModel: ObservableObject {
 
     // ── 跑引擎 ──
 
-    /// 调 scripts/dockgroup.py。成功后会重新读一遍配置 ——
+    /// 调 Swift 引擎。成功后会重新读一遍配置 ——
     /// 引擎可能会把 GUI 没碰过的字段（after、placement）也写一遍。
     func run(_ args: [String], reload: Bool = true) async {
         guard !running else { return }
@@ -389,12 +391,15 @@ final class AppModel: ObservableObject {
         await withCheckedContinuation { cont in
             DispatchQueue.global(qos: .userInitiated).async {
                 let p = Process()
-                p.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-                p.arguments = [P.script.path] + args
-                p.currentDirectoryURL = P.script.deletingLastPathComponent()
+                p.executableURL = P.engine
+                p.arguments = args
+                p.currentDirectoryURL = P.engine.deletingLastPathComponent()
                 var env = ProcessInfo.processInfo.environment
                 env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin"
-                env["PYTHONUNBUFFERED"] = "1"
+                env["DOCKGROUP_HOME"] = P.base.path
+                if let resources = Bundle.main.resourceURL {
+                    env["DOCKGROUP_SOURCE_ROOT"] = resources.appendingPathComponent("engine-resources").path
+                }
                 p.environment = env
                 let pipe = Pipe()
                 p.standardOutput = pipe
@@ -402,7 +407,7 @@ final class AppModel: ObservableObject {
                 do {
                     try p.run()
                 } catch {
-                    cont.resume(returning: (-1, "无法启动引擎：\(error.localizedDescription)\n检查 \(P.script.path)"))
+                    cont.resume(returning: (-1, "无法启动引擎：\(error.localizedDescription)\n检查 \(P.engine.path)"))
                     return
                 }
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
