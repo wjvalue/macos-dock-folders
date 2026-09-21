@@ -6,11 +6,14 @@
 # 而空格恰恰最容易出问题：f-string 的 `{:<10}` 是按**字符数**补位、
 # print 的换行次数、中文名在补位时算几个位置。
 #
-# 覆盖两类场景：
+# 覆盖三类场景：
 #   · 正常路径 —— 每个已搬迁的命令跑一遍
 #   · 异常分支 —— doctor 的「依赖缺失」「产物路径失效」在正常环境下根本跑不到。
-#     只测正常路径的话，这些分支里的输出差异永远发现不了（而它们恰恰是
-#     dg doctor 存在的意义，出事时用户看到的就是这些行）。
+#     只测正常路径的话，这些分支里的差异永远发现不了（而它们恰恰是 dg doctor
+#     存在的意义，出事时用户看到的就是那些行）。
+#   · 有副作用的命令 —— init 会写 groups.json，不能直接跑两遍（第二遍就会因为
+#     「配置已存在」走进另一条分支）。用隔离的 DOCKGROUP_HOME + 每轮清空处理，
+#     顺便把「已存在」和 --force 两条分支也覆盖掉。
 #
 # 用法：
 #   tools/compare_cli.sh
@@ -39,7 +42,7 @@ report() {   # $1=名称  $2=python 退出码  $3=swift 退出码
     else
         printf "  ❌ %-30s\n" "$1"
         echo "     python 退出码 $2 ／ swift 退出码 $3"
-        diff "$A" "$B" 2>&1 | head -14 | sed 's/^/     /'
+        diff "$A" "$B" 2>&1 | head -16 | sed 's/^/     /'
         fail=$((fail + 1))
     fi
 }
@@ -92,6 +95,32 @@ with open('$TMPHOME/.apps/Fake.app/Contents/Info.plist', 'wb') as f:
 "
 }
 
+# 有副作用的命令：两边各跑一次，每次先清空落盘目录，
+# 把**生成出来的 groups.json 也并进输出**一起比。
+# $1=名称  $2=环境变量串   $3=跑之前是否预置一份配置（"" 或 "existing"）  $4...=参数
+run_pair_stateful() {
+    local name="$1" envs="$2" preset="$3"; shift 3
+    local ra rb
+    for side in a b; do
+        rm -rf "$TMPHOME"; mkdir -p "$TMPHOME"
+        [ "$preset" = "existing" ] && echo '{"groups": []}' > "$TMPHOME/groups.json"
+        if [ "$side" = a ]; then
+            env $envs "$PY" "$REPO/scripts/dockgroup.py" "$@" > "$A" 2>&1; ra=$?
+            out="$A"
+        else
+            env $envs "$SW" "$@" > "$B" 2>&1; rb=$?
+            out="$B"
+        fi
+        if [ -f "$TMPHOME/groups.json" ]; then
+            echo "── groups.json ──" >> "$out"
+            cat "$TMPHOME/groups.json" >> "$out"
+        else
+            echo "── 没有生成 groups.json ──" >> "$out"
+        fi
+    done
+    report "$name" "$ra" "$rb"
+}
+
 echo "Python ⇄ Swift 输出对照"
 echo "── 正常路径 ──"
 run_pair "list" "" list
@@ -103,6 +132,13 @@ echo "── 异常分支 ──"
 setup_stale_home
 run_pair "doctor：产物路径失效" "DOCKGROUP_HOME=$TMPHOME" doctor
 run_pair "doctor：PATH 里什么都没有" "PATH=/nonexistent" doctor
+rm -rf "$TMPHOME"
+
+echo
+echo "── 有副作用的命令（隔离落盘 + 比对生成的文件）──"
+run_pair_stateful "init" "DOCKGROUP_HOME=$TMPHOME" "" init
+run_pair_stateful "init：配置已存在" "DOCKGROUP_HOME=$TMPHOME" "existing" init
+run_pair_stateful "init --force：覆盖" "DOCKGROUP_HOME=$TMPHOME" "existing" init --force
 rm -rf "$TMPHOME"
 
 echo

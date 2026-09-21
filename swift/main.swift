@@ -49,7 +49,7 @@ let args = Array(rawArgs.dropFirst())
 
 /// 还没搬过来的子命令，给出明确指引而不是含糊的「未知命令」。
 let notYetPorted: Set<String> = [
-    "init", "apply", "rebuild", "style", "layout",
+    "apply", "rebuild", "style", "layout",
     "add", "del", "open", "remove", "clean", "restore",
     "new", "preview", "watch-install", "watch-uninstall",
     "test", "logs", "gui",
@@ -67,6 +67,9 @@ case "list":
 
 case "doctor":
     cmdDoctor(args)
+
+case "init":
+    cmdInit(args)
 
 case "__dump-config":
     // 内部调试命令：把读到的配置重新序列化打出来。

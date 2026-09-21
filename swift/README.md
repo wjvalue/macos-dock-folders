@@ -35,7 +35,8 @@ tools/compare_cli.sh    # 跑对照测试
 |---|---|
 | `list` | ✅ 对照通过（32 行逐字符一致） |
 | `doctor` | ✅ 对照通过（21 行；异常分支另有两项覆盖） |
-| 其余 18 个 | ⬜ 未搬迁 —— 会明确提示去用 Python 版 |
+| `init` | ✅ 对照通过（40 行，含**写出的 groups.json** 逐字节比对） |
+| 其余 17 个 | ⬜ 未搬迁 —— 会明确提示去用 Python 版 |
 
 基础模块里 `Core/Config.swift`（groups.json 读入再序列化）也已逐字节对齐。
 
@@ -55,12 +56,18 @@ Core/
 Commands/
   List.swift          dg list
   Doctor.swift        dg doctor
+  Init.swift          dg init
 ```
 
-`tools/compare_cli.sh` 同时覆盖**正常路径**和**异常分支**：`dg doctor` 的
-「依赖缺失」「产物路径失效」在正常环境下根本跑不到，得靠 `DOCKGROUP_HOME`
-和 `PATH` 把它们逼出来 —— 而那恰恰是 doctor 存在的意义，出事时用户看到的就是
-那几行，不能只测 happy path。
+`tools/compare_cli.sh` 覆盖**三类**场景：
+
+- **正常路径** —— 每个已搬迁的命令跑一遍
+- **异常分支** —— `doctor` 的「依赖缺失」「产物路径失效」在正常环境下根本跑不到，
+  得靠 `DOCKGROUP_HOME` 和 `PATH` 逼出来。而那恰恰是 doctor 存在的意义，
+  出事时用户看到的就是那几行，不能只测 happy path。
+- **有副作用的命令** —— `init` 会写 `groups.json`，不能直接跑两遍（第二遍就走进
+  「配置已存在」那条分支了）。改成隔离落盘 + 每轮清空，并把**生成出来的
+  `groups.json` 也并进输出**一起比 —— 写盘格式对不对，只有这样才测得出来。
 
 ## 几条不能破的约定
 

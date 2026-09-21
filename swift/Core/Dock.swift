@@ -51,6 +51,20 @@ func dockHas(_ label: String) -> Bool {
     return false
 }
 
+/// 当前 Dock 里所有 App 路径（**保序**去重 —— 顺序就是图标在 Dock 上的顺序）。
+func dockAppList() -> [String] {
+    var out: [String] = []
+    let pl = dockRead()
+    for key in ["persistent-apps", "persistent-others"] {
+        guard let tiles = pl[key] as? [[String: Any]] else { continue }
+        for t in tiles {
+            guard let p = tilePath(t), p.hasSuffix(".app"), !out.contains(p) else { continue }
+            out.append(p)
+        }
+    }
+    return out
+}
+
 /// 解析 Finder 别名。
 ///
 /// Python 那边靠 osascript 跑一段 JXA 去调 `URLByResolvingAliasFileAtURLOptionsError`
