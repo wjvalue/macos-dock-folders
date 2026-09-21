@@ -438,6 +438,13 @@ dg list / style / layout / open / test / logs / remove / clean / watch-install /
   `/usr/bin/python3 -m pip install --user Pillow` 装一次。装进的是 **CLT 那个
   Python 的 user site**（`~/Library/Python/3.9/lib/python/site-packages`），
   所以 Homebrew / venv / 托管 Python 都读不到 —— 解释器必须写死，不能换。
+- **判断一个命令行工具是「系统自带」还是「CLT 提供」的判据**（2026-09-21 实测，三条互证）：
+  ① `xcrun -f <tool>`：解析回 `/usr/bin/<tool>` 自身 = 系统自带；解析到
+  `/Library/Developer/CommandLineTools/...` = CLT 提供（对照：`xcrun -f python3` → CLT 路径）。
+  ② 直接看 `/Library/Developer/CommandLineTools/usr/bin/` 里有没有它。
+  ③ 系统 shim 的硬链接数很高（`/usr/bin/python3` 是 78），独立二进制是 1。
+  **实测结论：只有 `swiftc` 和 `python3` 来自 CLT，`codesign` / `iconutil` / `sips` 都是系统自带。**
+  别再把后者说成「随 CLT 提供」—— 它们真缺了说明系统异常，装 CLT 解决不了。
 - macOS 26 已移除 `/System/Library/Fonts/PingFang.ttc`；
   中文渲染改用 `/System/Library/Fonts/Hiragino Sans GB.ttc`（index 2 = W6）。
 - **本机常见权限拦截**（会显著影响方案设计）：
