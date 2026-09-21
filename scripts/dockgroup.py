@@ -2399,8 +2399,13 @@ def cmd_restore(cfg, args):
         src = cands[-1]
     data = src.read_bytes()
     plistlib.loads(data)
-    subprocess.run(["defaults", "import", DOCK_DOMAIN, "-"], input=data, check=True)
-    sh(["killall", "Dock"])
+    if dock_plist_override() is not None:
+        # 对照测试：替身文件收下原始字节，不碰真 Dock（Swift 版同款开关）。
+        # restore 是唯一故意绕过 dock_write 直灌字节的路径，进哪里都必须可测。
+        dock_plist_override().write_bytes(data)
+    else:
+        subprocess.run(["defaults", "import", DOCK_DOMAIN, "-"], input=data, check=True)
+        sh(["killall", "Dock"])
     print(f"已从 {src} 恢复 Dock")
 
 

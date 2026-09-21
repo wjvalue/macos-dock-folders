@@ -163,6 +163,36 @@ JSON
                       # 真实目录（不是别名）—— del 必须拒绝删它
                       mkdir -p "$TMPHOME/测试组/Fake.app"
                       ;;
+            docky)    # 真 Dock 样本（tools/dock_fixture.py）：
+                      #   配置 = 样本自带的 groups.json（DOCKGROUP_HOME 指向 home/）
+                      #   Dock 输入 = $TMPHOME/dock.plist（= DOCKGROUP_DOCK_PLIST 指向的替身）
+                      DOCKGROUP_HOME="$TMPHOME/home" "$PY" "$REPO/tools/dock_fixture.py" \
+                          "$TMPHOME" "$TMPHOME/home" >/dev/null 2>&1
+                      ;;
+            backup)   cat > "$TMPHOME/groups.json" <<'JSON'
+{
+  "style": "graphite",
+  "groups": [
+    {
+      "name": "测试组",
+      "enabled": true,
+      "placement": "left",
+      "apps": []
+    }
+  ],
+  "material": "hud",
+  "layout": "row"
+}
+JSON
+                      mkdir -p "$TMPHOME/.backup"
+                      "$PY" -c "
+import plistlib
+for name in ('com.apple.dock-20260920-101010.plist',
+             'com.apple.dock-20260921-101010.plist'):
+    with open('$TMPHOME/.backup/' + name, 'wb') as f:
+        plistlib.dump({'persistent-apps': [], 'persistent-others': []}, f)
+" >/dev/null 2>&1
+                      ;;
         esac
         # ⚠️ 两边都接 /dev/null：万一哪条命令读 stdin（如 add 无参数进交互模式），
         # 也不能在这里挂起等输入 —— EOF/非终端分支本身就是被测行为之一。
@@ -178,6 +208,21 @@ JSON
             cat "$TMPHOME/groups.json" >> "$out"
         else
             echo "── 没有生成 groups.json ──" >> "$out"
+        fi
+        # 写过 Dock 替身的命令（remove / clean / restore / apply），把写出的
+        # 字节也并进输出一起比 —— dock_sync 那节就是这么盯死的。
+        # ⚠️ <data>（tile 的 book 书签）要归一化：new --apply 造出的 .app 的
+        # CFBundleVersion 两边注定不同（内容摘要 + LC_UUID，见 case_launcher_app
+        # 的注释），bundle 书签里嵌了它。字节级保真由 dock sync 节（同一 fixture、
+        # cmp -s 全量比对）负责，这里只比结构。
+        if [ -f "$TMPHOME/dock.plist" ]; then
+            echo "── dock.plist ──" >> "$out"
+            "$PY" -c "
+import re, sys
+t = open('$TMPHOME/dock.plist', encoding='utf-8').read()
+t = re.sub(r'<data>.*?</data>', '<data>X</data>', t, flags=re.S)
+sys.stdout.write(t)
+" >> "$out" 2>&1
         fi
     done
     report "$name" "$ra" "$rb"
@@ -461,6 +506,26 @@ run_pair_stateful "del：用法提示" "$STYLE_ENV" "grouped" del 测试组
 run_pair_stateful "open" "$STYLE_ENV" "seeded" open 测试组
 run_pair_stateful "open：没指定分组" "$STYLE_ENV" "grouped" open
 run_pair_stateful "open：没有的分组" "$STYLE_ENV" "grouped" open 没有这个组
+
+# remove / clean / restore / new。
+# docky 预置的真 Dock 样本里，备用组 / 回收站都在 persistent-others ——
+# remove 摘的就是它们；restore 用两份带时间戳的备份验「挑最新」与「直灌原始字节」。
+DOCKY_ENV="DOCKGROUP_HOME=$TMPHOME/home DOCKGROUP_DOCK_PLIST=$TMPHOME/dock.plist"
+run_pair_stateful "remove：摘掉 Dock 图标" "$DOCKY_ENV" "docky" remove 备用组 回收站
+run_pair_stateful "remove：不存在的组" "$DOCKY_ENV" "docky" remove 没有这个组
+run_pair_stateful "remove：没指定分组" "$STYLE_ENV" "grouped" remove
+run_pair_stateful "clean：摘掉并删文件夹" "$DOCKY_ENV" "docky" clean 备用组
+run_pair_stateful "clean：没指定分组" "$STYLE_ENV" "grouped" clean
+run_pair_stateful "restore：挑最新备份" "$STYLE_ENV" "backup" restore
+run_pair_stateful "restore：指定备份路径" "$STYLE_ENV" "backup" \
+    restore "$TMPHOME/.backup/com.apple.dock-20260920-101010.plist"
+run_pair_stateful "restore：没有备份" "$STYLE_ENV" "grouped" restore
+run_pair_stateful "new：新建分组" "$STYLE_ENV" "grouped" new 测试组2 Calculator
+run_pair_stateful "new --apply：建完写 Dock" "$STYLE_ENV" "grouped" new 测试组2 Calculator --apply
+run_pair_stateful "new：分组已存在" "$STYLE_ENV" "seeded" new 测试组 Calculator
+run_pair_stateful "new：找不到 App" "$STYLE_ENV" "grouped" new 测试组2 没有这个App
+run_pair_stateful "new：用法提示" "$STYLE_ENV" "grouped" new 测试组2
+run_pair_stateful "new：交互模式要终端" "$STYLE_ENV" "grouped" new
 rm -rf "$TMPHOME"
 
 echo

@@ -32,11 +32,14 @@ func showHelp() {
       layout [组名] <模式> 换面板排列
       add [组名] <App>...  往分组里加 App（不带参数进交互模式）
       del <组名> <App>...  从分组里移除 App（rm 同义）
+      new <组名> <App>...  新建分组（--apply 一步写进 Dock；不带参数进交互模式）
       open <组名>          在 Finder 里打开分组文件夹
+      remove <组名>...     从 Dock 移除（保留文件夹）
+      clean <组名>...      从 Dock 移除并删掉文件夹
+      restore [备份路径]   出错了回滚 Dock（不带参数用最新备份）
 
     还没搬（敲了会提示你去用 Python 版）：
-      restore  new  preview  remove  clean
-      watch-install  watch-uninstall  test  logs  gui
+      preview  watch-install  watch-uninstall  test  logs  gui
 
     迁移进行中：两套实现并存，逐个命令对齐后再切换。
     """)
@@ -52,8 +55,7 @@ let args = Array(rawArgs.dropFirst())
 
 /// 还没搬过来的子命令，给出明确指引而不是含糊的「未知命令」。
 let notYetPorted: Set<String> = [
-    "remove", "clean", "restore",
-    "new", "preview", "watch-install", "watch-uninstall",
+    "preview", "watch-install", "watch-uninstall",
     "test", "logs", "gui",
 ]
 
@@ -93,6 +95,18 @@ case "del", "rm":
 
 case "open":
     cmdOpen(loadConfig(), args)
+
+case "new":
+    cmdNew(loadConfig(), args)
+
+case "remove":
+    cmdRemove(loadConfig(), args)
+
+case "clean":
+    cmdClean(loadConfig(), args)
+
+case "restore":
+    cmdRestore(loadConfig(), args)
 
 case "__dock-sync":
     // 内部调试命令：只跑 dock_sync，把结果写进 `DOCKGROUP_DOCK_PLIST` 指定的文件。
