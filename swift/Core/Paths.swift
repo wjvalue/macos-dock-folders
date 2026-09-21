@@ -80,4 +80,4 @@ let ICON_INSET = 0.075
 let BG_RADIUS = 0.235
 
 /// 与 scripts/dockgroup.py 的 `__version__` 保持一致。
-let VERSION = "1.2.0"
+let VERSION = "1.2.1"
