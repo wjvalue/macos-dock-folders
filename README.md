@@ -48,12 +48,21 @@ iPhone 早就用文件夹解决了，而 macOS **从来没把这个交互搬过�
 
 ## 安装
 
-**方式 A（推荐）：下载预编译发布包。**
+**方式 A（推荐）：下载预编译发布包 —— 解压、双击，全程不用终端。**
 到 [Releases](https://github.com/wjvalue/macos-dock-folders/releases) 下载
-`dockgroup-vX.Y.Z-prebuilt.zip`，解压后双击 `tools/install.command`。
-包里带 universal 二进制（Apple Silicon / Intel 通吃），启动器和图形界面
-也都是预编译好的 —— **不需要装 Command Line Tools，也不需要 Python 和
-Pillow**，解压即用。
+`dockgroup-vX.Y.Z-prebuilt.zip`，解压后双击 `tools/install.command`，它一条龙做完：
+
+1. 装 `dg` 命令（universal 二进制，Apple Silicon / Intel 通吃）
+2. 把启动器 / 管理窗口的预编译二进制预置进缓存，之后 `apply` 现场免编译
+3. **构建图形界面 `DockGroup.app` 并放进「应用程序」** —— 装完双击即用，
+   加 App、换外观、应用到 Dock / 回滚全在窗口里点
+
+预编译包**不需要 Command Line Tools，也不需要 Python 和 Pillow**。
+
+> **引擎说明**：`dg` 的 20 个命令已全部用 Swift 重写，预编译包里就是编译好的
+> 二进制。源码安装保留一条 Python 回退路径（`scripts/dockgroup.py`），两套实现
+> 有逐字节对照测试（`tools/compare_cli.sh`）把关，行为一致 —— Python 版待
+> 预编译分发稳定后退役，日常使用建议走方式 A。
 
 **方式 B：源码安装。** 适合想改代码的人。依赖就下面这些。
 **Pillow 不在 macOS 自带依赖里**，需要单独装一次 ——
@@ -81,9 +90,10 @@ cd macos-dock-folders
 
 缺 Command Line Tools 的话：`xcode-select --install`。
 
-装一个短命令 `dg` —— 会自动把当前路径写进去，之后直接敲 `dg` 就行。
-**最省事的是双击 `tools/install.command`**：补 Pillow + 装 `dg` + 清隔离标记 + 体检
-一条龙，而且它**不会覆盖**你已经装过的 `dg`。手动装也就三行：
+源码安装也要装一个短命令 `dg`（此时它是包一层 `/usr/bin/python3` 的 shim；
+预编译包装上的 `dg` 直接就是二进制）。**最省事的是双击 `tools/install.command`**：
+补 Pillow + 装 `dg` + 清隔离标记 + 生成图形界面 + 体检一条龙，而且它**不会覆盖**
+你已经装过的 `dg`。手动装也就三行：
 
 ```bash
 mkdir -p ~/.local/bin
@@ -247,7 +257,7 @@ Dock 上的分组图标上 —— 松手时分组图标会高亮，自动建别�
 ![管理窗口](docs/manager.png)
 
 ```bash
-dg gui              # 第一次跑会编译打包（十来秒），之后秒开
+dg gui              # 预编译包秒开（二进制已预置）；源码安装第一次现场 swiftc（约十秒），之后走缓存
 dg gui --rebuild    # 改过窗口源码后强制重编译
 ```
 
@@ -268,7 +278,7 @@ dg gui --rebuild    # 改过窗口源码后强制重编译
 `scripts/manager/main.swift`，然后 `dg gui --rebuild`。
 
 > **它和命令行什么关系**：增删 App、应用、移除、回滚这些会改配置的动作，窗口一律
-> 转发给 `scripts/dockgroup.py` 执行；只有「外观」三项是窗口直接写 `groups.json` 的
+> 转发给 `dg` 引擎执行（预编译包是 Swift 二进制，源码安装是 Python 版）；只有「外观」三项是窗口直接写 `groups.json` 的
 > （为了能即时预览，不至于每拖一下就重启一次 Dock）。两边共用同一套逻辑，
 > 配置文件格式也逐字节一致，不会各说各话。
 
@@ -468,6 +478,19 @@ dg layout 办公 default             # 「办公」退回全局默认
 
 ## 实现与取舍
 
+### 引擎：从 Python + Pillow 到全 Swift
+
+`dg` 的 20 个命令现在全部由 Swift 实现（`swift/`，`swiftc` 直接编译，不引
+Xcode 工程 / SPM / 第三方依赖）。动机是**零运行期依赖**：迁移前一半功能在
+Python（2400 行）和 Pillow 手上，用户必须装 Command Line Tools **和** Pillow
+才能跑；配上预编译分发，现在用户端连 CLT 都不必装。
+
+迁移走的绞杀者模式：两套实现并存 → 逐命令对齐 → 全部对齐后切换。每个命令都要过
+`tools/compare_cli.sh` 的逐行 diff —— 终端输出、写盘的 `groups.json`、生成的
+bundle 结构、合成图标的像素都在比对范围内，这是唯一的正确性关卡。Python 版
+（`scripts/dockgroup.py`）保留作源码安装的回退，待预编译分发稳定后退役。
+迁移策略与不能破的约定见 [`swift/README.md`](swift/README.md)。
+
 ### 为什么默认是 App 而不是文件夹 Stack
 
 Dock 支持把文件夹放进去（Stack），但它有个硬限制：
@@ -544,12 +567,17 @@ ln -s "$PWD" ~/.workbuddy/skills/macos-dock-folders
 ## 开发
 
 `docs/` 下的配图由脚本生成，不靠手工截图 —— 手工截图做不到统一的背景、留白和字体，
-而且容易把终端内容一起截进去。脚本用的是同一套图标提取和合成算法
-（`scripts/dockgroup.py`），只是换了个「舞台」：
+而且容易把终端内容一起截进去。脚本复用同一套图标提取与合成算法（生产引擎已切到
+Swift，但两套实现产出逐字节一致，配图脚本直接 import Python 版最省事），只是换了
+个「舞台」：
 
 ```bash
 /usr/bin/python3 tools/readme_assets.py     # 重新生成 docs/*.png
 ```
+
+Swift 引擎的开发说明（迁移策略、对照测试、不能破的约定）见
+[`swift/README.md`](swift/README.md)；预编译发布包用 `tools/build-release.sh`
+构建（`dg` / 启动器 / 管理窗口三个 universal 二进制 + 源码树，打成一个 zip）。
 
 ## License
 

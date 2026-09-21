@@ -1,10 +1,12 @@
 # swift/ —— dockgroup 的 Swift 实现
 
-> 迁移进行中。这个目录与 `scripts/dockgroup.py` **并存**，不是替代关系。
+> **迁移已完成（2026-09-21 收官）**：20 / 20 个命令全部对照通过，这里是 `dg` 的
+> 唯一引擎。`scripts/dockgroup.py`（Python 版）保留作源码安装的回退，待预编译
+> 分发稳定后退役。
 
 ## 为什么会有这个目录
 
-全 Swift 化的目标是**零运行期依赖**。现在一半功能在 Python（`dockgroup.py`，2400 行）
+全 Swift 化的目标是**零运行期依赖**。迁移前一半功能在 Python（`dockgroup.py`，2400 行）
 和 Pillow 手上，用户必须装 Xcode Command Line Tools **和** Pillow 才能跑。
 全搬到 Swift 之后只剩编译期需要 CLT；再配合预编译二进制，用户端连 CLT 都不必装。
 
@@ -31,22 +33,19 @@ tools/compare_cli.sh    # 跑对照测试
 
 ## 进度
 
-| 命令 | 状态 |
-|---|---|
-| `list` | ✅ 对照通过（32 行逐字符一致） |
-| `doctor` | ✅ 对照通过（21 行；异常分支另有两项覆盖） |
-| `init` | ✅ 对照通过（40 行，含**写出的 groups.json** 逐字节比对） |
-| `rebuild` | ✅ 产物对照通过（Info.plist / bundle 结构 / 合成图标） |
-| 其余 16 个 | ⬜ 未搬迁 —— 会明确提示去用 Python 版 |
+**20 / 20 全部对照通过**（2026-09-21 收官，`2d122ca`）。覆盖不止「终端输出逐行
+一致」：
 
-`rebuild` 是第一个**真正产出 `.app`** 的命令。它的构建链路（`build_group` →
-`build_launcher_app` → 图标 → icns → Info.plist → 签名）已经能和 Python 版
-产出等价的结果。
+- **输出**：每个命令的终端输出逐行 diff —— `{:<10}` 按字符数补位、`print` 的
+  换行次数、中文名算几个位置，全在比对范围
+- **写盘**：`init` 写出的 `groups.json` 逐字节一致（自实现的有序 JSON）
+- **产物**：`rebuild` 生成的 Info.plist / bundle 结构 / 合成图标逐项比对；
+  图标像素 MAE 实测 0.35（CoreText vs FreeType），阈值 3.0
+- **异常分支**：doctor 的「依赖缺失」「产物路径失效」在正常环境跑不到，靠
+  `DOCKGROUP_HOME` / `PATH` 逼出来 —— 那恰恰是用户出事时看到的几行
 
 > ⚠️ `rebuild` / `apply` 会 `killall Dock`，从沙箱里直接跑会把当前命令连带打死
 > （exit 137、零输出）。对照测试因此走内部命令 `__build-group`：只构建、不重启 Dock。
-
-基础模块里 `Core/Config.swift`（groups.json 读入再序列化）也已逐字节对齐。
 
 ## 结构
 
@@ -69,11 +68,15 @@ Core/
   LauncherApp.swift   构建启动器 .app（编译 / 图标 / plist / 签名）
   Sh.swift            跑外部命令
   Util.swift          pad（按字符数补位）、pyLess（码点序比较）、DgError
-Commands/
-  List.swift          dg list
-  Doctor.swift        dg doctor
-  Init.swift          dg init
-  Rebuild.swift       dg rebuild
+Commands/            20 个命令，一个文件一个命令
+  Add / Del / New            增删（含交互引导）
+  Apply / Rebuild            写 Dock / 全量重建
+  Style / Layout             外观：图标风格、面板材质、排列
+  Gui                        管理窗口（构建 + 打开 DockGroup.app）
+  List / Doctor / Init       查看与体检
+  Preview / Test / Logs      预览、试弹、日志
+  Open / Remove / Restore    文件夹、移除、回滚
+  Watch                      文件夹监听（watch-install / watch-uninstall）
 ```
 
 `tools/compare_cli.sh` 覆盖**三类**场景：
