@@ -988,11 +988,137 @@ func commandRemove(_ args: [String], clean: Bool) {
 func commandDoctor() {
     output("dockgroup \(engineVersion)\n")
     let tools = ["swiftc", "codesign", "iconutil", "sips", "osascript"]
-    for tool in tools { output("  ✅  \(tool)") }
+    for tool in tools {
+        let path = "/usr/bin/\(tool)"
+        output("  \(FileManager.default.isExecutableFile(atPath: path) ? "✅" : "❌")  \(tool)")
+    }
     let configPath = FileManager.default.fileExists(atPath: Paths.config.path)
         ? Paths.config.path
         : "（还没建）"
     output("\n  落盘目录：\(Paths.base.path)\n  配置文件：\(configPath)")
+}
+
+/// 从当前 Dock 的 file-tile 读取 App 路径，生成一个不自动启用的起始分组。
+func commandInit(_ args: [String]) {
+    let force = args.contains("--force")
+    guard force || !FileManager.default.fileExists(atPath: Paths.config.path) else {
+        fail("\(Paths.config.path) 已存在（要覆盖请加 --force）")
+    }
+    let plist = dockRead()
+    var apps: [String] = []
+    for key in ["persistent-apps", "persistent-others"] {
+        for tile in (plist[key] as? [[String: Any]]) ?? [] {
+            guard let path = tilePath(tile), path.hasSuffix(".app"), !apps.contains(path) else { continue }
+            apps.append(path)
+        }
+    }
+    guard !apps.isEmpty else { fail("读不到 Dock 里的 App，先确认 Dock 正常运行") }
+    var config = Config()
+    config.groups = [Group(name: "分组1", apps: Array(apps.prefix(4)))]
+    config.groups[0].enabled = false
+    saveConfig(config)
+    output("已生成 \(Paths.config)\n示例分组「分组1」已关闭，修改后再运行 dg apply")
+}
+
+/// 用备份 plist 恢复 Dock，恢复前验证文件确实是可读的 Property List。
+func commandRestore(_ args: [String]) {
+    let source: URL
+    if let path = args.first {
+        source = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+    } else {
+        let backups = (try? FileManager.default.contentsOfDirectory(
+            at: Paths.backup,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ))?.filter { $0.pathExtension == "plist" }.sorted {
+            let left = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+                ?? .distantPast
+            let right = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+                ?? .distantPast
+            return left > right
+        }
+        guard let latest = backups?.first else { fail("没有可用 Dock 备份") }
+        source = latest
+    }
+    guard let data = try? Data(contentsOf: source),
+          (try? PropertyListSerialization.propertyList(from: data, options: [], format: nil)) != nil else {
+        fail("备份不是有效的 Dock plist：\(source.path)")
+    }
+    guard captured("/usr/bin/defaults", ["import", dockDomain, "-"], input: data).status == 0 else {
+        fail("导入 Dock 备份失败")
+    }
+    _ = run("/usr/bin/killall", ["Dock"])
+    output("已从 \(source.path) 恢复 Dock")
+}
+
+/// 打开生成的分组 App，保留与旧版 `dg test` 相同的人工验证入口。
+func commandTest(_ args: [String]) {
+    guard let name = args.first else { fail("请指定分组名") }
+    _ = groupOrFail(loadConfig(), name: name)
+    let app = Paths.apps.appendingPathComponent("\(name).app")
+    guard FileManager.default.fileExists(atPath: app.path) else {
+        fail("启动器还没构建：\(app.path)，先运行 dg apply")
+    }
+    _ = run("/usr/bin/open", [app.path])
+    output("已启动 \(app.path)")
+}
+
+/// 打印启动器留下的面板与事件日志，方便不依赖 GUI 排查点击问题。
+func commandLogs(_ args: [String]) {
+    guard let name = args.first else { fail("用法：dg logs <组名>") }
+    _ = groupOrFail(loadConfig(), name: name)
+    for suffix in ["launch.log", "events.log"] {
+        let file = Paths.cache.appendingPathComponent("\(name).\(suffix)")
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else {
+            output("还没有日志：\(file.path)")
+            continue
+        }
+        output("— \(file.lastPathComponent) —\n\(text)")
+    }
+}
+
+/// 安装 launchd 文件夹监听；监听回调直接运行 Swift 引擎，不再依赖 Python。
+func commandWatchInstall() {
+    let home = FileManager.default.homeDirectoryForCurrentUser
+    let plistURL = home.appendingPathComponent("Library/LaunchAgents/local.dockgroup.watch.plist")
+    let groups = loadConfig().groups
+        .map { Paths.base.appendingPathComponent($0.name).path }
+    guard !groups.isEmpty else { fail("还没有分组，无法安装监听") }
+    let plist: [String: Any] = [
+        "Label": "local.dockgroup.watch",
+        "ProgramArguments": [executableURL().path, "rebuild", "--quiet"],
+        "EnvironmentVariables": [
+            "DOCKGROUP_HOME": Paths.base.path,
+            "DOCKGROUP_SOURCE_ROOT": Paths.sourceRoot?.path ?? ""
+        ],
+        "WatchPaths": groups,
+        "RunAtLoad": false,
+        "ThrottleInterval": 5
+    ]
+    do {
+        try FileManager.default.createDirectory(
+            at: plistURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: plist,
+            format: .xml,
+            options: 0
+        )
+        try data.write(to: plistURL, options: .atomic)
+        output("已写入 \(plistURL.path)\n请在自己的终端执行 launchctl bootstrap 以启用监听")
+    } catch {
+        fail("写入监听配置失败：\(error.localizedDescription)")
+    }
+}
+
+/// 卸载 launchd 文件夹监听并删除其 plist。
+func commandWatchUninstall() {
+    let home = FileManager.default.homeDirectoryForCurrentUser
+    let plistURL = home.appendingPathComponent("Library/LaunchAgents/local.dockgroup.watch.plist")
+    _ = run("/bin/launchctl", ["bootout", "gui/\(getuid())", plistURL.path])
+    try? FileManager.default.removeItem(at: plistURL)
+    output("自动监听已卸载")
 }
 
 func buildManager() -> URL {
@@ -1064,9 +1190,11 @@ if args.isEmpty || args.first == "--help" || args.first == "help" {
       dg del 组名 App...
       dg apply [组名...]
       dg rebuild
+      dg init [--force]
       dg preview [组名...]
       dg style 组名 材质
       dg layout 组名 模式
+      dg restore / test / logs / watch-install
       dg gui
       dg doctor
     """)
@@ -1079,12 +1207,18 @@ if args.isEmpty || args.first == "--help" || args.first == "help" {
     case "apply": commandApply(Array(args.dropFirst()))
     case "rebuild": commandRebuild(Array(args.dropFirst()))
     case "preview": commandPreview(Array(args.dropFirst()))
+    case "init": commandInit(Array(args.dropFirst()))
     case "style": commandStyle(Array(args.dropFirst()))
     case "layout": commandLayout(Array(args.dropFirst()))
     case "list": commandList()
     case "open": commandOpen(Array(args.dropFirst()))
     case "remove": commandRemove(Array(args.dropFirst()), clean: false)
     case "clean": commandRemove(Array(args.dropFirst()), clean: true)
+    case "restore": commandRestore(Array(args.dropFirst()))
+    case "test": commandTest(Array(args.dropFirst()))
+    case "logs": commandLogs(Array(args.dropFirst()))
+    case "watch-install": commandWatchInstall()
+    case "watch-uninstall": commandWatchUninstall()
     case "doctor": commandDoctor()
     case "gui": commandGUI()
     default: fail("未知命令：\(args[0])")

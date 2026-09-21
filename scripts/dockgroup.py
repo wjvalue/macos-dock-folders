@@ -326,7 +326,18 @@ ICON_SRC_PX = 512
 # ─────────────────────────────────────────────────────────── 基础工具
 
 def sh(cmd, check=False):
-    return subprocess.run(cmd, capture_output=True, text=True, check=check)
+    """跑外部命令。
+
+    找不到可执行文件时**不抛异常**，返回一个 returncode=-1 的结果就行 ——
+    `dg doctor` 这类诊断路径恰恰是在「环境不对劲」的时候跑的，它自己不能
+    因为环境不对就先崩掉。（实测：PATH 异常时 `security find-identity`
+    直接把 doctor 打挂，用户想看诊断信息反而什么都看不到。）
+    """
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, check=check)
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(
+            cmd, returncode=-1, stdout="", stderr=f"找不到可执行文件：{cmd[0]}")
 
 
 def uid() -> str:
@@ -1757,9 +1768,18 @@ def cmd_doctor(cfg, args):
             print("    /usr/bin/python3 -m pip install --user Pillow")
             print("  必须装给 /usr/bin/python3（本工具固定用它，别的解释器读不到）。")
         if missing & {"swiftc", "codesign", "iconutil", "sips"}:
-            print("\n  swiftc / codesign / iconutil / sips 都随 Xcode Command Line Tools 提供：")
-            print("    xcode-select --install")
-            print("  只想用右侧文件夹模式的话，缺 swiftc 也能跑（placement 设成 right）。")
+            # 只有 swiftc 来自 CLT，别把 codesign / iconutil / sips 也算进去 ——
+            # 那是 macOS 自带的（xcrun -f 解析回 /usr/bin，CLT 的 bin 里没有它们）。
+            # 真缺了说明系统环境有问题，装 CLT 也救不回来，所以分开说。
+            if "swiftc" in missing:
+                print("\n  swiftc 随 Xcode Command Line Tools 提供：")
+                print("    xcode-select --install")
+                print("  只想用右侧文件夹模式的话，缺 swiftc 也能跑（placement 设成 right）。")
+            sysmiss = missing & {"codesign", "iconutil", "sips"}
+            if sysmiss:
+                print("\n  这几个是 macOS 自带的，正常不该缺："
+                      + "、".join(sorted(sysmiss)))
+                print("  缺了说明系统环境异常（检查 /usr/bin 是否被改动过），装 CLT 解决不了。")
 
     # ── 分发与签名 ──
     # 这一节存在的理由：签名身份和隔离属性都属于「本机自测一路绿灯、发出去才炸」
@@ -1786,6 +1806,33 @@ def cmd_doctor(cfg, args):
             print("              首次打开会被拦。跑 dg rebuild / dg gui 会自动清掉。")
         else:
             print(f"    ✅ 隔离属性 : {len(built)} 个 App 都干净")
+
+        # 产物里的路径是否还有效。
+        # .app 的 Info.plist 里存着两项**绝对路径**：DockGroupScript（引擎脚本）
+        # 和 DockGroupFolder（分组文件夹）。仓库被移动/改名之后这些路径就失效，
+        # 而失效的表现是「拖 App 到 Dock 图标上没反应」—— 启动器只把原因写进
+        # .cache/<组>.launch.log，界面上毫无提示（issue #1 里用户建议改用相对
+        # 路径，就是这个痛点）。这里主动查出来，省得靠猜。
+        stale = []
+        for a in built:
+            try:
+                with (a / "Contents/Info.plist").open("rb") as f:
+                    pl = plistlib.load(f)
+            except Exception as e:
+                stale.append(f"{a.stem}：读不到 Info.plist（{e.__class__.__name__}）")
+                continue
+            miss = [k for k in ("DockGroupScript", "DockGroupFolder")
+                    if pl.get(k) and not Path(pl[k]).exists()]
+            if miss:
+                stale.append(f"{a.stem}：{'、'.join(miss)} 指向的路径已不存在")
+        if stale:
+            print(f"    ⚠️ 产物路径 : {len(stale)} 个 App 的依赖路径失效")
+            for s in stale:
+                print(f"                  {s}")
+            print("              表现是「拖 App 到 Dock 图标上没反应」。"
+                  "跑 dg rebuild 重建即可。")
+        else:
+            print(f"    ✅ 产物路径 : {len(built)} 个 App 的依赖路径都在")
 
 
 def cmd_init(cfg, args):

@@ -57,6 +57,9 @@ Pillow 或任何第三方运行库。`tools/install.command` 会编译一次引�
 | `codesign` `iconutil` `sips` | 临时签名、打包 `.icns` | 随 Xcode Command Line Tools |
 | `osascript` | 调 AppKit / Foundation | 系统自带 |
 
+其中 `swiftc` 来自 Xcode Command Line Tools，`codesign`、`iconutil`、`sips` 和
+`osascript` 是 macOS 自带工具；安装原生引擎不需要 Python 或 Pillow。
+
 ```bash
 git clone https://github.com/wjvalue/macos-dock-folders.git
 cd macos-dock-folders
@@ -533,6 +536,8 @@ ln -s "$PWD" ~/.workbuddy/skills/macos-dock-folders
 
 `docs/` 下的配图由脚本生成，不靠手工截图 —— 手工截图做不到统一的背景、留白和字体，
 而且容易把终端内容一起截进去。配图脚本是开发期工具，不属于运行时依赖：
+
+如需重新生成配图，才需要为开发环境单独安装 Pillow；日常使用 `dg` 不会触发这套脚本。
 
 ```bash
 /usr/bin/python3 tools/readme_assets.py     # 重新生成 docs/*.png
