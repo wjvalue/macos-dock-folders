@@ -2475,9 +2475,14 @@ def cmd_gui(cfg, args):
     """
     app = build_manager_app(force="--rebuild" in args)
     print(f"管理窗口：{app}")
-    if dock_plist_override() is None:      # 对照测试模式下不真开（Swift 版同款开关）
-        sh(["open", str(app)])
-    print("已打开。加 App、换外观、应用/回滚都能在里面点。")
+    no_open = "--no-open" in args
+    if no_open:
+        # 只构建不开窗：install.command 用它预装到「应用程序」
+        print("已构建，未启动（安装完成后再打开也一样）。")
+    else:
+        if dock_plist_override() is None:   # 对照测试模式下不真开（Swift 版同款开关）
+            sh(["open", str(app)])
+        print("已打开。加 App、换外观、应用/回滚都能在里面点。")
     print(f"（改不了界面本身的话，源码在 {SCRIPT_DIR / MANAGER_SRC}）")
 
 

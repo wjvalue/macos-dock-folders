@@ -125,7 +125,25 @@ else
 fi
 echo
 
-echo "④ 依赖体检"
+echo "④ 生成图形界面"
+# 构建管理窗口 App 并放进「应用程序」—— 之后双击 DockGroup.app 就能操作，
+# 完全不用终端。--no-open：只构建不开窗。
+APP_SRC="$HOME/Dock Groups/.apps/DockGroup.app"
+if [ "${DG_RUN:-}" = "bin" ]; then
+    "$DG" gui --no-open
+else
+    /usr/bin/python3 "$ROOT/scripts/dockgroup.py" gui --no-open
+fi
+if [ -d "$APP_SRC" ]; then
+    rm -rf "/Applications/DockGroup.app"
+    cp -R "$APP_SRC" /Applications/
+    echo "   已放入 /Applications/DockGroup.app（双击即用）"
+else
+    echo "   ⚠️  图形界面没构建出来，之后随时可以跑 dg gui 补上。"
+fi
+echo
+
+echo "⑤ 依赖体检"
 if [ "${DG_RUN:-}" = "bin" ]; then
     "$DG" doctor
 else

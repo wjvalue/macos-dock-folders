@@ -617,6 +617,7 @@ run_pair_stateful "watch-uninstall" "$STYLE_ENV" "seeded" watch-uninstall
 # gui：会真编译 manager 二进制（swiftc 十来秒）+ 打包签名。
 # 对比图另在像素节比（case_manager_icon）。
 run_pair_stateful "gui：打开管理窗口" "$STYLE_ENV" "seeded" gui
+run_pair_stateful "gui --no-open：只构建" "$STYLE_ENV" "seeded" gui --no-open
 run_pair_stateful "gui --rebuild：强制重建" "$STYLE_ENV" "seeded" gui --rebuild
 rm -rf "$TMPHOME"
 
