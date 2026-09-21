@@ -33,8 +33,9 @@ tools/compare_cli.sh    # 跑对照测试
 
 | 命令 | 状态 |
 |---|---|
-| `list` | ✅ 已搬迁，对照通过（32 行逐字符一致） |
-| 其余 19 个 | ⬜ 未搬迁 —— 会明确提示去用 Python 版 |
+| `list` | ✅ 对照通过（32 行逐字符一致） |
+| `doctor` | ✅ 对照通过（21 行；异常分支另有两项覆盖） |
+| 其余 18 个 | ⬜ 未搬迁 —— 会明确提示去用 Python 版 |
 
 基础模块里 `Core/Config.swift`（groups.json 读入再序列化）也已逐字节对齐。
 
@@ -48,10 +49,18 @@ Core/
   JSON.swift          有序 JSON 的解析与序列化
   Config.swift        groups.json 读写、分组级覆盖解析
   Dock.swift          Dock plist 读取、别名解析、分组文件夹扫描
+  Quarantine.swift    隔离属性检测与清理、结束常驻启动器
   Sh.swift            跑外部命令
+  Util.swift          pad（按字符数补位）、pyLess（码点序比较）
 Commands/
   List.swift          dg list
+  Doctor.swift        dg doctor
 ```
+
+`tools/compare_cli.sh` 同时覆盖**正常路径**和**异常分支**：`dg doctor` 的
+「依赖缺失」「产物路径失效」在正常环境下根本跑不到，得靠 `DOCKGROUP_HOME`
+和 `PATH` 把它们逼出来 —— 而那恰恰是 doctor 存在的意义，出事时用户看到的就是
+那几行，不能只测 happy path。
 
 ## 几条不能破的约定
 

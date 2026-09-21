@@ -5,13 +5,6 @@
 
 import Foundation
 
-/// 对应 Python f-string 的 `{:<N}`：按**字符数**左对齐补齐。
-/// 中文也算一个位置 —— 所以含中文的名字看起来会"不齐"，但这是原版行为，照抄。
-/// （Python 的 `<` 格式符按字符数而非显示宽度算。）
-func pad(_ s: String, _ width: Int) -> String {
-    s.count >= width ? s : s + String(repeating: " ", count: width - s.count)
-}
-
 func cmdList(_ args: [String]) {
     let cfg = loadConfig()
 
