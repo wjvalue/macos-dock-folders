@@ -7,8 +7,9 @@
 // 文件夹放进左侧 App 区后，点击只会打开 Finder 窗口，不会弹网格。
 // 换成真正的 App，点击行为就完全由自己控制，而且 App tile 在左侧是原生支持的。
 //
-// 分组内容在运行时从 Info.plist 的 DockGroupFolder 指向的文件夹里现读现解析，
-// 所以往文件夹里加/删 App 只需 rebuild 图标，不用重编译。
+// 分组内容在运行时从用户配置目录里的同名文件夹现读现解析，所以往文件夹里加/删 App
+// 只需 rebuild 图标，不用重编译。路径由 bundle 所在的 `.apps` 目录反推，避免把某台
+// 机器的绝对路径写进产物。
 
 import Cocoa
 
@@ -523,12 +524,28 @@ final class Delegate: NSObject, NSApplicationDelegate {
     private var groupName: String {
         (Bundle.main.object(forInfoDictionaryKey: "DockGroupName") as? String) ?? "group"
     }
+
+    /// 解析当前用户的配置根目录。
+    ///
+    /// `.apps/<组名>.app` 是引擎的固定目录结构；优先从 bundle 反推可保留
+    /// `DOCKGROUP_HOME` 的自定义位置，直接双击被单独复制的 App 时再退回默认目录。
+    private var baseDirectory: String {
+        if let override = ProcessInfo.processInfo.environment["DOCKGROUP_HOME"],
+           !override.isEmpty {
+            return (override as NSString).expandingTildeInPath
+        }
+        let appsDirectory = Bundle.main.bundleURL.deletingLastPathComponent()
+        if appsDirectory.lastPathComponent == ".apps" {
+            return appsDirectory.deletingLastPathComponent().path
+        }
+        return NSHomeDirectory() + "/Dock Groups"
+    }
+
     private var folderPath: String {
-        (Bundle.main.object(forInfoDictionaryKey: "DockGroupFolder") as? String) ?? ""
+        URL(fileURLWithPath: baseDirectory).appendingPathComponent(groupName).path
     }
     private var logDir: String {
-        (Bundle.main.object(forInfoDictionaryKey: "DockGroupLogDir") as? String)
-            ?? (NSHomeDirectory() + "/Dock Groups/.cache")
+        URL(fileURLWithPath: baseDirectory).appendingPathComponent(".cache").path
     }
     private var materialName: String {
         (Bundle.main.object(forInfoDictionaryKey: "DockGroupMaterial") as? String) ?? "menu"
@@ -539,10 +556,15 @@ final class Delegate: NSObject, NSApplicationDelegate {
     private var layoutMode: String {
         (Bundle.main.object(forInfoDictionaryKey: "DockGroupLayout") as? String) ?? "row"
     }
-    /// dockgroup.py 的绝对路径。GUI 进程的 PATH 只有 /usr/bin:/bin，
-    /// 不能指望 `dg` 在 PATH 里，所以由 Info.plist 直接塞绝对路径进来。
-    private var scriptPath: String {
-        (Bundle.main.object(forInfoDictionaryKey: "DockGroupScript") as? String) ?? ""
+    /// 找到 bundle 自带的引擎脚本。
+    ///
+    /// 保留环境变量入口供开发调试使用；正式产物不再从 Info.plist 读取仓库绝对路径。
+    private var scriptURL: URL? {
+        if let override = ProcessInfo.processInfo.environment["DOCKGROUP_SCRIPT"],
+           !override.isEmpty {
+            return URL(fileURLWithPath: (override as NSString).expandingTildeInPath)
+        }
+        return Bundle.main.url(forResource: "dockgroup", withExtension: "py")
     }
 
     func applicationDidFinishLaunching(_ note: Notification) {
@@ -710,20 +732,24 @@ final class Delegate: NSObject, NSApplicationDelegate {
 
     /// 跑 dockgroup.py add，走和命令行完全一样的链路（建别名 → 刷新图标 → 重启 Dock）。
     private func runAdd(_ paths: [String]) {
-        guard !scriptPath.isEmpty else {
-            trace("add aborted: DockGroupScript missing in Info.plist")
+        guard let script = scriptURL else {
+            trace("add aborted: bundled engine script is missing")
             return
         }
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        task.arguments = [scriptPath, "add", groupName] + paths
+        task.arguments = [script.path, "add", groupName] + paths
+        task.currentDirectoryURL = script.deletingLastPathComponent()
+        var environment = ProcessInfo.processInfo.environment
+        environment["DOCKGROUP_HOME"] = baseDirectory
+        task.environment = environment
         let pipe = Pipe()
         task.standardOutput = pipe
         task.standardError = pipe
         do {
             try task.run()
         } catch {
-            trace("add failed to spawn python: \(error.localizedDescription)")
+            trace("add failed to spawn engine: \(error.localizedDescription)")
             return
         }
         task.terminationHandler = { [weak self] t in

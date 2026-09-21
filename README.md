@@ -483,6 +483,10 @@ Dock 支持把文件夹放进去（Stack），但它有个硬限制：
 └── groups.json
 ```
 
+生成的 App 不会把构建机器上的分组目录或仓库绝对路径写进 `Info.plist`：它根据自身位于
+`.apps` 下的位置解析配置根目录，并把拖放回调所需的引擎资源放在 `Contents/Resources/`。
+因此整体迁移 `Dock Groups` 目录后，启动器和管理窗口仍能找到同一份配置。
+
 ### 已知限制
 
 - 左侧模式依赖手写 `persistent-apps`。macOS 不让你拖，但接受 plist 写入（已实测重启 Dock

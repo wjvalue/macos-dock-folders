@@ -24,10 +24,15 @@ import UniformTypeIdentifiers
 enum P {
     static let home = FileManager.default.homeDirectoryForCurrentUser
 
-    /// 与 dockgroup.py 的 BASE 保持同一口径（DOCKGROUP_HOME > ~/Dock Groups）。
+    /// 与引擎保持同一口径。管理窗口位于 `<base>/.apps/DockGroup.app` 时，
+    /// 从 bundle 反推自定义配置目录，避免把构建机的绝对路径写进 Info.plist。
     static let base: URL = {
         if let s = ProcessInfo.processInfo.environment["DOCKGROUP_HOME"], !s.isEmpty {
             return URL(fileURLWithPath: (s as NSString).expandingTildeInPath)
+        }
+        let appsDirectory = Bundle.main.bundleURL.deletingLastPathComponent()
+        if appsDirectory.lastPathComponent == ".apps" {
+            return appsDirectory.deletingLastPathComponent()
         }
         return home.appendingPathComponent("Dock Groups")
     }()
@@ -35,16 +40,22 @@ enum P {
     static let config = base.appendingPathComponent("groups.json")
     static let cache = base.appendingPathComponent(".cache")
 
-    /// 引擎脚本的绝对路径。GUI 进程的 PATH 只有 /usr/bin:/bin，
-    /// 不能指望 dg 在 PATH 里 —— 构建时把绝对路径写进 Info.plist，
-    /// 和 launcher 是同一套做法。环境变量优先，方便直接跑二进制调试。
+    /// 找到 bundle 内随应用分发的引擎脚本。环境变量优先，方便直接跑二进制调试。
     static let script: URL = {
         if let s = ProcessInfo.processInfo.environment["DOCKGROUP_SCRIPT"], !s.isEmpty {
-            return URL(fileURLWithPath: s)
+            return URL(fileURLWithPath: (s as NSString).expandingTildeInPath)
         }
         if let s = Bundle.main.object(forInfoDictionaryKey: "DockGroupScript") as? String,
            !s.isEmpty {
-            return URL(fileURLWithPath: s)
+            if s.hasPrefix("/") {
+                return URL(fileURLWithPath: s)
+            }
+            if let bundled = Bundle.main.url(forResource: s, withExtension: nil) {
+                return bundled
+            }
+        }
+        if let bundled = Bundle.main.url(forResource: "dockgroup", withExtension: "py") {
+            return bundled
         }
         return home.appendingPathComponent("Dock Groups/dockgroup.py")
     }()
@@ -395,6 +406,7 @@ final class AppModel: ObservableObject {
                 var env = ProcessInfo.processInfo.environment
                 env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin"
                 env["PYTHONUNBUFFERED"] = "1"
+                env["DOCKGROUP_HOME"] = P.base.path
                 p.environment = env
                 let pipe = Pipe()
                 p.standardOutput = pipe
