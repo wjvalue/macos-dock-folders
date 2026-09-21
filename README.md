@@ -55,8 +55,13 @@ iPhone 早就用文件夹解决了，而 macOS **从来没把这个交互搬过�
 |---|---|---|
 | `/usr/bin/python3` | 跑脚本本身 | 随 Xcode Command Line Tools |
 | **Pillow** | 合成分组图标的拼贴图 | `/usr/bin/python3 -m pip install --user Pillow` |
-| `swiftc` `codesign` `iconutil` `sips` | 编译启动器 App、打包 `.icns` | 随 Xcode Command Line Tools |
-| `osascript` | 调 AppKit / Foundation | 系统自带 |
+| `swiftc` | 编译分组启动器 / 管理窗口 | 随 Xcode Command Line Tools |
+| `codesign` `iconutil` `sips` | App 临时签名、打包 `.icns`、缩放 PNG | **macOS 自带** |
+| `osascript` | 调 AppKit / Foundation | **macOS 自带** |
+
+也就是说**只有 `python3` 和 `swiftc` 来自 Command Line Tools**，其余都是系统自带。
+（`codesign` / `iconutil` / `sips` 一直被人当成 CLT 的一部分，其实不是 ——
+`xcrun -f iconutil` 解析回 `/usr/bin/iconutil`，CLT 的 bin 目录里也没有它们。）
 
 ```bash
 git clone https://github.com/wjvalue/macos-dock-folders.git
