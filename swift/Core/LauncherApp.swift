@@ -103,9 +103,9 @@ func buildLauncherApp(_ g: JSONObject, style: String = DEFAULT_STYLE, force: Boo
         ("DockGroupLogDir", .string(CACHE.path)),
         ("DockGroupMaterial", .string(material)),
         ("DockGroupName", .string(name)),
-        // 启动器收到拖放后要回调本工具。GUI 进程的 PATH 只有 /usr/bin:/bin，
+        // 启动器收到拖放后要回调引擎；GUI 进程的 PATH 只有 /usr/bin:/bin，
         // 不能指望 dg 在 PATH 里，直接把绝对路径塞进去。
-        ("DockGroupScript", .string(SCRIPT_DIR.appendingPathComponent("dockgroup.py").path)),
+        ("DockGroupScript", .string(engineCommand())),
         ("LSMinimumSystemVersion", .string("12.0")),
         ("LSUIElement", .bool(true)),
         ("NSHighResolutionCapable", .bool(true)),

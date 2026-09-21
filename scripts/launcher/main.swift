@@ -708,22 +708,27 @@ final class Delegate: NSObject, NSApplicationDelegate {
         runAdd(paths)
     }
 
-    /// 跑 dockgroup.py add，走和命令行完全一样的链路（建别名 → 刷新图标 → 重启 Dock）。
+    /// 跑引擎的 add，走和命令行完全一样的链路（建别名 → 刷新图标 → 重启 Dock）。
+    ///
+    /// 引擎入口有两种形态：dockgroup.py（要经 /usr/bin/python3）和 dg 二进制 /
+    /// 带 shebang 的 shim（直接 exec）—— 用后缀区分。
     private func runAdd(_ paths: [String]) {
         guard !scriptPath.isEmpty else {
             trace("add aborted: DockGroupScript missing in Info.plist")
             return
         }
+        let isPython = scriptPath.hasSuffix(".py")
         let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        task.arguments = [scriptPath, "add", groupName] + paths
+        task.executableURL = URL(fileURLWithPath: isPython ? "/usr/bin/python3" : scriptPath)
+        task.arguments = isPython ? [scriptPath, "add", groupName] + paths
+                                  : ["add", groupName] + paths
         let pipe = Pipe()
         task.standardOutput = pipe
         task.standardError = pipe
         do {
             try task.run()
         } catch {
-            trace("add failed to spawn python: \(error.localizedDescription)")
+            trace("add failed to spawn engine: \(error.localizedDescription)")
             return
         }
         task.terminationHandler = { [weak self] t in

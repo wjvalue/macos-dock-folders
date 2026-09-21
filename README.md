@@ -48,7 +48,15 @@ iPhone 早就用文件夹解决了，而 macOS **从来没把这个交互搬过�
 
 ## 安装
 
-依赖就下面这些。**Pillow 不在 macOS 自带依赖里**，需要单独装一次 ——
+**方式 A（推荐）：下载预编译发布包。**
+到 [Releases](https://github.com/wjvalue/macos-dock-folders/releases) 下载
+`dockgroup-vX.Y.Z-prebuilt.zip`，解压后双击 `tools/install.command`。
+包里带 universal 二进制（Apple Silicon / Intel 通吃），启动器和图形界面
+也都是预编译好的 —— **不需要装 Command Line Tools，也不需要 Python 和
+Pillow**，解压即用。
+
+**方式 B：源码安装。** 适合想改代码的人。依赖就下面这些。
+**Pillow 不在 macOS 自带依赖里**，需要单独装一次 ——
 也是唯一一个得手动补的（`tools/install.command` 会发现缺了并顺手装上）。
 
 | 依赖 | 用来干什么 | 怎么来 |

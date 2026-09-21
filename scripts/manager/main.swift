@@ -385,12 +385,16 @@ final class AppModel: ObservableObject {
 
     /// 子进程执行。PATH 显式补全：引擎要用 osascript / swiftc / codesign /
     /// iconutil / sips / mdfind，而 GUI 进程默认只有 /usr/bin:/bin。
+    ///
+    /// 引擎入口有两种形态：dockgroup.py（要经 /usr/bin/python3）和 dg 二进制 /
+    /// 带 shebang 的 shim（直接 exec）—— 用后缀区分。
     nonisolated static func exec(_ args: [String]) async -> (code: Int32, text: String) {
         await withCheckedContinuation { cont in
             DispatchQueue.global(qos: .userInitiated).async {
+                let isPython = P.script.path.hasSuffix(".py")
                 let p = Process()
-                p.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-                p.arguments = [P.script.path] + args
+                p.executableURL = URL(fileURLWithPath: isPython ? "/usr/bin/python3" : P.script.path)
+                p.arguments = isPython ? [P.script.path] + args : args
                 p.currentDirectoryURL = P.script.deletingLastPathComponent()
                 var env = ProcessInfo.processInfo.environment
                 env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin"

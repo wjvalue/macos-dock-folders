@@ -85,7 +85,7 @@ import urllib.parse
 from datetime import datetime
 from pathlib import Path
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 try:
     from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -114,6 +114,21 @@ DOCK_DOMAIN = "com.apple.dock"
 AGENT_LABEL = "local.dockgroup.watch"
 AGENT_PLIST = HOME / "Library/LaunchAgents" / f"{AGENT_LABEL}.plist"
 BUNDLE_PREFIX = "local.dockgroup.app"
+
+
+def engine_command() -> str:
+    """生成 .app 的 Info.plist 里 DockGroupScript 该写的引擎入口。
+
+    优先用户级的 dg 短命令（Swift 版二进制或它的 shim 都能被直接 exec），
+    没有就退回仓库里的 dockgroup.py。这个路径跨引擎切换是**稳定**的：
+    install.command 把 ~/.local/bin/dg 从 Python shim 换成 Swift 二进制后，
+    旧 .app 无需重建就会自动用上新引擎。两套实现（Python / Swift）的
+    engine_command 必须解析出**同一个路径**，对照测试比的就是这个。
+    """
+    dg = HOME / ".local" / "bin" / "dg"
+    if dg.is_file() and os.access(dg, os.X_OK):
+        return str(dg)
+    return str(SCRIPT_DIR / "dockgroup.py")
 
 # iOS 主屏文件夹的几何比例（相对文件夹边长）
 ICON_INSET = 0.075      # 画布四周留白，对齐普通 App 图标 86.5% 的内容占比
@@ -898,9 +913,9 @@ def build_launcher_app(g, style=DEFAULT_STYLE, force=False,
         # 网格布局模式（auto / row / 数字）。启动器按它决定列数，
         # 见 main.swift 的 columns(for:layout:)。进内容摘要 → 改了会重写 bundle。
         "DockGroupLayout": str(layout),
-        # 启动器收到拖放后要回调本脚本；GUI 进程的 PATH 只有 /usr/bin:/bin，
+        # 启动器收到拖放后要回调引擎；GUI 进程的 PATH 只有 /usr/bin:/bin，
         # 不能指望 dg 在 PATH 里，直接把绝对路径塞进去。
-        "DockGroupScript": str(SCRIPT_DIR / "dockgroup.py"),
+        "DockGroupScript": engine_command(),
         # 声明能处理 .app → 拖 App 到 Dock 图标上时 tile 会高亮成放置目标。
         # LSHandlerRank=Alternate：不当默认处理器（双击 App 仍由系统启动），
         # 只作为「可以接收」的候选，保证 Dock 拖放会高亮。
@@ -1050,7 +1065,9 @@ def build_manager_app(force=False) -> Path:
         # 没有它，SwiftUI 的 @main App 在 bundle 里不会建出 NSApplication，
         # 表现是「进程起来了但没窗口」。
         "NSPrincipalClass": "NSApplication",
-        "DockGroupScript": str(SCRIPT_DIR / "dockgroup.py"),
+        # DockGroupScript 必须写绝对路径：GUI 进程的 PATH 只有 /usr/bin:/bin，
+        # 里面也没有 dg 这个短命令，只能靠 Info.plist 把引擎位置告诉它。
+        "DockGroupScript": engine_command(),
     }
 
     # 图标进摘要：只改画图逻辑不重打包的话，Dock 里还是旧图标。

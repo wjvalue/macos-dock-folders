@@ -124,7 +124,7 @@ func buildManagerApp(force: Bool = false) -> URL {
         ("CFBundleVersion", .string("1")),
         // GUI 进程的 PATH 只有 /usr/bin:/bin，也没有 dg 短命令，
         // 只能靠 Info.plist 把引擎位置告诉它。
-        ("DockGroupScript", .string(SCRIPT_DIR.appendingPathComponent("dockgroup.py").path)),
+        ("DockGroupScript", .string(engineCommand())),
         ("LSMinimumSystemVersion", .string("12.0")),
         ("NSHighResolutionCapable", .bool(true)),
         ("NSPrincipalClass", .string("NSApplication")),
