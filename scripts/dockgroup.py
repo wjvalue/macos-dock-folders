@@ -1787,6 +1787,33 @@ def cmd_doctor(cfg, args):
         else:
             print(f"    ✅ 隔离属性 : {len(built)} 个 App 都干净")
 
+        # 产物里的路径是否还有效。
+        # .app 的 Info.plist 里存着两项**绝对路径**：DockGroupScript（引擎脚本）
+        # 和 DockGroupFolder（分组文件夹）。仓库被移动/改名之后这些路径就失效，
+        # 而失效的表现是「拖 App 到 Dock 图标上没反应」—— 启动器只把原因写进
+        # .cache/<组>.launch.log，界面上毫无提示（issue #1 里用户建议改用相对
+        # 路径，就是这个痛点）。这里主动查出来，省得靠猜。
+        stale = []
+        for a in built:
+            try:
+                with (a / "Contents/Info.plist").open("rb") as f:
+                    pl = plistlib.load(f)
+            except Exception as e:
+                stale.append(f"{a.stem}：读不到 Info.plist（{e.__class__.__name__}）")
+                continue
+            miss = [k for k in ("DockGroupScript", "DockGroupFolder")
+                    if pl.get(k) and not Path(pl[k]).exists()]
+            if miss:
+                stale.append(f"{a.stem}：{'、'.join(miss)} 指向的路径已不存在")
+        if stale:
+            print(f"    ⚠️ 产物路径 : {len(stale)} 个 App 的依赖路径失效")
+            for s in stale:
+                print(f"                  {s}")
+            print("              表现是「拖 App 到 Dock 图标上没反应」。"
+                  "跑 dg rebuild 重建即可。")
+        else:
+            print(f"    ✅ 产物路径 : {len(built)} 个 App 的依赖路径都在")
+
 
 def cmd_init(cfg, args):
     force = "--force" in args
