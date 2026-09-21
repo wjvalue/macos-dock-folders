@@ -11,6 +11,9 @@ groups.local.json
 *.app/
 build/
 
+# swift/build.sh 生成的编译期常量（内容是本机绝对路径，不该入库）
+swift/Core/BuildInfo.swift
+
 # macOS
 .DS_Store
 Icon?
