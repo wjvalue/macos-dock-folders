@@ -24,3 +24,4 @@ Icon?
 
 # 工作区记忆：AI 的本地工作日志，不属于项目产物
 .workbuddy/
+prebuilt/
