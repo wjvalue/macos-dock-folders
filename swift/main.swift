@@ -30,9 +30,12 @@ func showHelp() {
       apply               生成 App 并写入 Dock
       style [组名] <材质>  换面板底色（毛玻璃材质）
       layout [组名] <模式> 换面板排列
+      add [组名] <App>...  往分组里加 App（不带参数进交互模式）
+      del <组名> <App>...  从分组里移除 App（rm 同义）
+      open <组名>          在 Finder 里打开分组文件夹
 
     还没搬（敲了会提示你去用 Python 版）：
-      add  del  open  restore  new  preview  remove  clean
+      restore  new  preview  remove  clean
       watch-install  watch-uninstall  test  logs  gui
 
     迁移进行中：两套实现并存，逐个命令对齐后再切换。
@@ -49,8 +52,7 @@ let args = Array(rawArgs.dropFirst())
 
 /// 还没搬过来的子命令，给出明确指引而不是含糊的「未知命令」。
 let notYetPorted: Set<String> = [
-    "apply", "style", "layout",
-    "add", "del", "open", "remove", "clean", "restore",
+    "remove", "clean", "restore",
     "new", "preview", "watch-install", "watch-uninstall",
     "test", "logs", "gui",
 ]
@@ -82,6 +84,15 @@ case "style":
 
 case "layout":
     cmdLayout(loadConfig(), args)
+
+case "add":
+    cmdAdd(loadConfig(), args)
+
+case "del", "rm":
+    cmdDel(loadConfig(), args)
+
+case "open":
+    cmdOpen(loadConfig(), args)
 
 case "__dock-sync":
     // 内部调试命令：只跑 dock_sync，把结果写进 `DOCKGROUP_DOCK_PLIST` 指定的文件。

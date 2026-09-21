@@ -28,3 +28,15 @@ struct DgError: Error {
     let message: String
     init(_ message: String) { self.message = message }
 }
+
+/// 对应 Python 的 `sys.exit("...")`：消息进 stderr、退出码 1。
+/// 只供「直接终止」的命令层用；可被调用方捞回的走 DgError。
+///
+/// ⚠️ 必须先 flush stdout：Python 的 sys.exit 在解释器关闭时**先刷 stdout、
+/// 再写 stderr**；Swift 不 flush 的话 stdout 缓冲在退出时才落盘，两个流进
+/// 同一个文件时顺序就和 Python 颠倒 —— 对照测试会被这种假差异打红。
+func fatal(_ msg: String) -> Never {
+    fflush(stdout)
+    FileHandle.standardError.write((msg + "\n").data(using: .utf8)!)
+    exit(1)
+}

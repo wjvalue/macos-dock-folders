@@ -94,7 +94,12 @@ with open('$TMPHOME/.apps/Fake.app/Contents/Info.plist', 'wb') as f:
 }
 
 # 有副作用的命令：隔离落盘 + 每轮清空，把生成出来的 groups.json 并进输出一起比。
-# $1=名称  $2=环境变量串  $3=预置配置（"" / "existing" / "grouped"）  $4...=参数
+# $1=名称  $2=环境变量串  $3=预置配置（"" / "existing" / "grouped" / "seeded" / "danger"）  $4...=参数
+#
+#   seeded —— 测试组文件夹已建好、里面有一个 Calculator 别名，配置的 apps 列表
+#             也登记了同一路径。给 add 的「重复」分支和 del 的「真删」分支当输入。
+#   danger —— 测试组文件夹里放的是一个**真实目录**（Fake.app），触发 del 的拒删分支。
+#             别名创建 / 文件夹搭建用 Python 侧做 —— 它是输入，不是被测对象。
 run_pair_stateful() {
     local name="$1" envs="$2" preset="$3"; shift 3
     local ra rb out
@@ -118,12 +123,54 @@ run_pair_stateful() {
 }
 JSON
                       ;;
+            seeded)   cat > "$TMPHOME/groups.json" <<JSON
+{
+  "style": "graphite",
+  "groups": [
+    {
+      "name": "测试组",
+      "enabled": true,
+      "placement": "left",
+      "apps": ["/System/Applications/Calculator.app"]
+    }
+  ],
+  "material": "hud",
+  "layout": "row"
+}
+JSON
+                      mkdir -p "$TMPHOME/测试组"
+                      DOCKGROUP_HOME="$TMPHOME" "$PY" -c "
+import sys; sys.path.insert(0, '$REPO/scripts')
+from dockgroup import jxa
+jxa('mkalias', '$TMPHOME/测试组', '/System/Applications/Calculator.app')
+" >/dev/null 2>&1
+                      ;;
+            danger)   cat > "$TMPHOME/groups.json" <<JSON
+{
+  "style": "graphite",
+  "groups": [
+    {
+      "name": "测试组",
+      "enabled": true,
+      "placement": "left",
+      "apps": []
+    }
+  ],
+  "material": "hud",
+  "layout": "row"
+}
+JSON
+                      # 真实目录（不是别名）—— del 必须拒绝删它
+                      mkdir -p "$TMPHOME/测试组/Fake.app"
+                      ;;
         esac
+        # ⚠️ 两边都接 /dev/null：万一哪条命令读 stdin（如 add 无参数进交互模式），
+        # 也不能在这里挂起等输入 —— EOF/非终端分支本身就是被测行为之一。
         if [ "$side" = a ]; then
-            env $envs "$PY" "$REPO/scripts/dockgroup.py" "$@" > "$A" 2>&1; ra=$?
+            env $envs "$PY" "$REPO/scripts/dockgroup.py" "$@" < /dev/null > "$A" 2>&1; ra=$?
             out="$A"
         else
-            env $envs "$SW" "$@" > "$B" 2>&1; rb=$?
+            env $envs "$SW" "$@" < /dev/null > "$B" 2>&1; rb=$?
             out="$B"
         fi
         if [ -f "$TMPHOME/groups.json" ]; then
@@ -398,6 +445,22 @@ run_pair_stateful "style --all menu" "$STYLE_ENV" "grouped" style --all menu
 run_pair_stateful "layout --all dock-grid" "$STYLE_ENV" "grouped" layout --all dock-grid
 run_pair_stateful "layout 不存在组" "$STYLE_ENV" "grouped" layout 没有这个组 auto
 run_pair_stateful "style 不存在的材质" "$STYLE_ENV" "grouped" style 测试组 没有这个材质
+
+# add / del / open：对 Calculator 的解析走 ① 精确匹配（/System/Applications），
+# 不依赖 Spotlight 索引 —— 测试必须可复现，不能押注 mdfind 的可用性。
+run_pair_stateful "add：新增 App" "$STYLE_ENV" "grouped" add 测试组 Calculator
+run_pair_stateful "add：已在分组里" "$STYLE_ENV" "seeded" add 测试组 Calculator
+run_pair_stateful "add：找不到 App" "$STYLE_ENV" "seeded" add 测试组 没有这个App
+run_pair_stateful "add：没有的分组" "$STYLE_ENV" "grouped" add 没有这个组 Calculator
+run_pair_stateful "add：用法提示" "$STYLE_ENV" "grouped" add 测试组
+run_pair_stateful "add：交互模式要终端" "$STYLE_ENV" "grouped" add
+run_pair_stateful "del：删除 App" "$STYLE_ENV" "seeded" del 测试组 Calculator
+run_pair_stateful "del：没匹配" "$STYLE_ENV" "seeded" del 测试组 没有这个App
+run_pair_stateful "del：真实 App 拒删" "$STYLE_ENV" "danger" del 测试组 Fake
+run_pair_stateful "del：用法提示" "$STYLE_ENV" "grouped" del 测试组
+run_pair_stateful "open" "$STYLE_ENV" "seeded" open 测试组
+run_pair_stateful "open：没指定分组" "$STYLE_ENV" "grouped" open
+run_pair_stateful "open：没有的分组" "$STYLE_ENV" "grouped" open 没有这个组
 rm -rf "$TMPHOME"
 
 echo

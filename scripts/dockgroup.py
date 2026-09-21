@@ -2286,7 +2286,8 @@ def cmd_open(cfg, args):
         sys.exit(f"没有分组「{args[0]}」")
     folder = BASE / g["name"]
     folder.mkdir(parents=True, exist_ok=True)
-    sh(["open", str(folder)])
+    if dock_plist_override() is None:      # 对照测试模式下不真开 Finder（Swift 版同款开关）
+        sh(["open", str(folder)])
     print(f"已打开 {folder}")
     print("往里加 App：按住 ⌘ ⌥ 从「应用程序」拖进来 = 建别名（不会移动原 App）")
     print("加完跑一次：dockgroup.py rebuild")
