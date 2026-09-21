@@ -48,8 +48,12 @@ func stripQuarantine(_ path: URL) -> Bool {
 ///
 /// 那 0.4 秒是等 LaunchServices 消化进程退出，否则紧接着点击可能撞上
 /// 「已不能再打开」。
+///
+/// 设了 `DOCKGROUP_DOCK_PLIST`（对照测试模式）时直接返回 false、不动任何进程 ——
+/// 否则跑一次对照测试会把用户正开着的面板全关掉。
 @discardableResult
 func killLaunchers() -> Bool {
+    if dockPlistOverride != nil { return false }
     let r = run("/usr/bin/pkill", ["-f", "DockGroupLauncher"])
     if r.status == 0 {
         Thread.sleep(forTimeInterval: 0.4)

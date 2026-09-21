@@ -46,8 +46,10 @@ func refreshGroups(_ cfg: JSONObject, names: [String]? = nil, quiet: Bool = fals
         // 先杀启动器再重启 Dock：顺序反过来的话，重启完 Dock 又有一瞬间可能被点到，
         // 那时旧进程还在，就会用旧布局再画一次面板。
         killLaunchers()
-        run("/usr/bin/killall", ["Dock"])
-        run("/usr/bin/killall", ["Finder"])
+        if dockPlistOverride == nil {       // 对照测试模式下不碰真实 Dock
+            run("/usr/bin/killall", ["Dock"])
+            run("/usr/bin/killall", ["Finder"])
+        }
     }
     if !quiet {
         for s in skipped { print("  跳过：\(s)") }

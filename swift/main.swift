@@ -26,11 +26,14 @@ func showHelp() {
       doctor              体检：依赖、落盘、签名、隔离、产物路径
       list                列出配置里的分组
       init                扫描当前 Dock 生成起始配置
+      rebuild             只重建图标与 App，不动 Dock
+      apply               生成 App 并写入 Dock
+      style [组名] <材质>  换面板底色（毛玻璃材质）
+      layout [组名] <模式> 换面板排列
 
     还没搬（敲了会提示你去用 Python 版）：
-      apply  rebuild  style  layout  add  del  open  restore
-      new  preview  remove  clean  watch-install  watch-uninstall
-      test  logs  gui
+      add  del  open  restore  new  preview  remove  clean
+      watch-install  watch-uninstall  test  logs  gui
 
     迁移进行中：两套实现并存，逐个命令对齐后再切换。
     """)
@@ -70,6 +73,35 @@ case "init":
 
 case "rebuild":
     cmdRebuild(loadConfig(), args)
+
+case "apply":
+    cmdApply(loadConfig(), args)
+
+case "style":
+    cmdStyle(loadConfig(), args)
+
+case "layout":
+    cmdLayout(loadConfig(), args)
+
+case "__dock-sync":
+    // 内部调试命令：只跑 dock_sync，把结果写进 `DOCKGROUP_DOCK_PLIST` 指定的文件。
+    // 对照测试拿它和 Python 的 dock_sync 比**写出的 Dock 配置字节** ——
+    // 这是整个工具唯一会改用户 Dock 的地方，也是最该盯死的一段。
+    // 没设那个环境变量时拒绝运行：绝不能拿这个命令去动真 Dock。
+    guard let override = dockPlistOverride else {
+        FileHandle.standardError.write(
+            "拒绝运行：__dock-sync 必须配合 DOCKGROUP_DOCK_PLIST 使用\n".data(using: .utf8)!)
+        exit(2)
+    }
+    let syncCfg = loadConfig()
+    let prune = !args.contains("--keep-originals")
+    do {
+        try dockSync(syncCfg, only: nil, prune: prune)
+        print("\(override.path)  ok")
+    } catch let e as DgError {
+        FileHandle.standardError.write("\(e.message)\n".data(using: .utf8)!)
+        exit(1)
+    }
 
 case "__build-group":
     // 内部调试命令：只构建一个分组，**不重启 Dock**。

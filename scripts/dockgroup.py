@@ -382,7 +382,12 @@ def kill_launchers() -> bool:
 
     杀干净之后下次点击会启动新进程、读新 bundle。那 0.4 秒是为了等 LaunchServices
     消化进程退出，否则紧接着点击可能撞上「已不能再打开」。
+
+    设了 DOCKGROUP_DOCK_PLIST（对照测试模式）时直接返回 False、不动任何进程 ——
+    否则跑一次对照测试会把你自己开着的面板全关掉。
     """
+    if dock_plist_override() is not None:
+        return False
     r = sh(["pkill", "-f", "DockGroupLauncher"])
     if r.returncode == 0:
         time.sleep(0.4)
@@ -1170,18 +1175,41 @@ def build_group(g, icons_only=False, style=DEFAULT_STYLE, seed=None):
 _dock_cache = None
 
 
+def dock_plist_override():
+    """对照测试用的 Dock 替身路径；没设 `DOCKGROUP_DOCK_PLIST` 时返回 None。
+
+    设了之后：读写 Dock 配置改成读写那个文件，并且**跳过一切会打扰系统的动作**
+    （defaults import / 备份 / killall Dock & Finder / 杀启动器）。
+
+    为什么需要它：dock_sync 是整个工具里唯一会改用户 Dock 的地方，恰恰最该被测到；
+    可真跑一遍的代价是「两套实现先后把用户的 Dock 真改掉两次」，而且 killall Dock
+    从 WorkBuddy 沙箱里跑会把当前命令连带打死（exit 137、零输出）—— 根本拿不到结果。
+    Swift 版有同款开关，两边行为必须一致，否则对照测试比的不是同一件事。
+    """
+    p = os.environ.get("DOCKGROUP_DOCK_PLIST")
+    return Path(p) if p else None
+
+
 def dock_read(refresh: bool = False) -> dict:
     """读 Dock 配置。同一次命令里反复读没意义，缓存住；
     dock_write 会同步更新缓存，不会读到脏数据。"""
     global _dock_cache
     if _dock_cache is None or refresh:
-        _dock_cache = plistlib.loads(sh(["defaults", "export", DOCK_DOMAIN, "-"]).stdout.encode())
+        override = dock_plist_override()
+        if override is not None:
+            _dock_cache = plistlib.loads(override.read_bytes()) if override.exists() else {}
+        else:
+            _dock_cache = plistlib.loads(sh(["defaults", "export", DOCK_DOMAIN, "-"]).stdout.encode())
     return _dock_cache
 
 
 def dock_write(pl: dict):
     global _dock_cache
     data = plistlib.dumps(pl)
+    if dock_plist_override() is not None:
+        dock_plist_override().write_bytes(data)
+        _dock_cache = pl
+        return
     BACKUP.mkdir(parents=True, exist_ok=True)
     (BACKUP / f"com.apple.dock-{datetime.now():%Y%m%d-%H%M%S}.plist").write_bytes(data)
     subprocess.run(["defaults", "import", DOCK_DOMAIN, "-"], input=data, check=True)
@@ -2143,8 +2171,9 @@ def refresh_groups(cfg, names=None, quiet=False):
         # 先杀启动器再重启 Dock：顺序反过来的话，重启完 Dock 又有一瞬间可能被点到，
         # 那时旧进程还在，就会用旧布局画一次面板。
         kill_launchers()
-        sh(["killall", "Dock"])
-        sh(["killall", "Finder"])
+        if dock_plist_override() is None:      # 对照测试模式下不碰真实 Dock
+            sh(["killall", "Dock"])
+            sh(["killall", "Finder"])
     if not quiet:
         for s in skipped:
             print(f"  跳过：{s}")

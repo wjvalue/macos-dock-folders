@@ -94,13 +94,31 @@ with open('$TMPHOME/.apps/Fake.app/Contents/Info.plist', 'wb') as f:
 }
 
 # 有副作用的命令：隔离落盘 + 每轮清空，把生成出来的 groups.json 并进输出一起比。
-# $1=名称  $2=环境变量串  $3=是否预置配置（"" 或 "existing"）  $4...=参数
+# $1=名称  $2=环境变量串  $3=预置配置（"" / "existing" / "grouped"）  $4...=参数
 run_pair_stateful() {
     local name="$1" envs="$2" preset="$3"; shift 3
     local ra rb out
     for side in a b; do
         rm -rf "$TMPHOME"; mkdir -p "$TMPHOME"
-        [ "$preset" = "existing" ] && echo '{"groups": []}' > "$TMPHOME/groups.json"
+        case "$preset" in
+            existing) echo '{"groups": []}' > "$TMPHOME/groups.json" ;;
+            grouped)  cat > "$TMPHOME/groups.json" <<'JSON'
+{
+  "style": "graphite",
+  "groups": [
+    {
+      "name": "测试组",
+      "enabled": true,
+      "placement": "left",
+      "apps": []
+    }
+  ],
+  "material": "hud",
+  "layout": "row"
+}
+JSON
+                      ;;
+        esac
         if [ "$side" = a ]; then
             env $envs "$PY" "$REPO/scripts/dockgroup.py" "$@" > "$A" 2>&1; ra=$?
             out="$A"
@@ -265,10 +283,97 @@ sys.stdout.write(t)
     rm -rf "$T" "$PYAPP" "$SWAPP"
 }
 
+# Dock 写入：拿一份固定的 Dock 配置样本当输入，两边各写一次，比**写出的字节**。
+#
+# 这是整个工具里唯一会改用户 Dock 的地方，也是最该被测死的一段。靠
+# DOCKGROUP_DOCK_PLIST 把落盘目标换成临时文件 —— 否则两套实现会先后把用户的 Dock
+# 真改掉两次，而 killall Dock 还会把当前命令连带打死（exit 137、零输出）。
+#
+# 样本（tools/dock_fixture.py）刻意覆盖了自动落位 / 剔除已折叠成员 / 清掉同名旧图标 /
+# 右侧区过滤 / 兜底追加五条分支 —— 只测 happy path 的话这些一条都跑不到。
+case_dock_sync() {
+    local extra="$1"
+    local label="dock sync"
+    local prune="True"
+    if [ -n "$extra" ]; then label="dock sync $extra"; prune="False"; fi
+
+    local T=/tmp/cmpdock
+    rm -rf "$T"; mkdir -p "$T"
+    DOCKGROUP_HOME="$T/home" "$PY" "$REPO/tools/dock_fixture.py" "$T" "$T/home" >/dev/null 2>&1
+    if [ ! -f "$T/dock.plist" ]; then
+        printf "  ·  %-30s 跳过（样本生成失败）\n" "$label"
+        return
+    fi
+    cp "$T/dock.plist" "$T/py.plist"; cp "$T/dock.plist" "$T/sw.plist"
+
+    # ⚠️ 两边必须用**同一个** DOCKGROUP_HOME：写出的 tile 里含落盘路径，
+    # 目录不同就没法逐字节比了。要隔离的是 Dock 配置的输出文件，不是 home。
+    PYPRUNE="$prune" DOCKGROUP_HOME="$T/home" DOCKGROUP_DOCK_PLIST="$T/py.plist" \
+        "$PY" -c "
+import os, sys
+sys.path.insert(0, '$REPO/scripts')
+from dockgroup import load_config, dock_sync
+dock_sync(load_config(), only=None, prune=os.environ['PYPRUNE'] == 'True')
+" > "$A" 2>&1
+    local ra=$?
+    DOCKGROUP_HOME="$T/home" DOCKGROUP_DOCK_PLIST="$T/sw.plist" \
+        "$SW" __dock-sync $extra > "$B" 2>&1
+    local rb=$?
+
+    if cmp -s "$T/py.plist" "$T/sw.plist"; then
+        printf "  ✅ %-30s %6d 字节  退出码 %s\n" "$label" \
+               "$(wc -c < "$T/py.plist" | tr -d ' ')" "$ra"
+        pass=$((pass + 1))
+    else
+        printf "  ❌ %-30s\n" "$label"
+        echo "     python 退出码 $ra ／ swift 退出码 $rb"
+        diff "$T/py.plist" "$T/sw.plist" 2>&1 | head -20 | sed 's/^/     /'
+        fail=$((fail + 1))
+    fi
+    rm -rf "$T"
+}
+
+# rebuild：走完整的 refresh_groups（含逐分组构建 + 「跳过失败分组」那条路）。
+# 靠 DOCKGROUP_DOCK_PLIST 关掉 killall，否则从沙箱里跑会把当前命令打死。
+case_rebuild() {
+    local T=/tmp/cmprebuild
+    rm -rf "$T"; mkdir -p "$T/测试组"
+    DOCKGROUP_HOME="$T" "$PY" -c "
+import sys; sys.path.insert(0, '$REPO/scripts')
+from dockgroup import jxa
+jxa('mkalias', '$T/测试组', '/System/Applications/Calculator.app')
+" >/dev/null 2>&1
+    cat > "$T/groups.json" <<'JSON'
+{
+  "style": "graphite",
+  "groups": [
+    {
+      "name": "测试组",
+      "enabled": true,
+      "placement": "left",
+      "apps": []
+    }
+  ],
+  "material": "hud",
+  "layout": "row"
+}
+JSON
+    local ra rb
+    rm -rf "$T/.cache" "$T/.apps"
+    DOCKGROUP_HOME="$T" "$PY" "$REPO/scripts/dockgroup.py" rebuild > "$A" 2>&1; ra=$?
+    rm -rf "$T/.cache" "$T/.apps"
+    DOCKGROUP_HOME="$T" "$SW" rebuild > "$B" 2>&1; rb=$?
+    report "rebuild" "$ra" "$rb"
+    rm -rf "$T"
+}
+
+
 echo "Python ⇄ Swift 对照"
 echo "── 文本输出：正常路径 ──"
 run_pair "list" "" list
 run_pair "doctor" "" doctor
+run_pair "style（列材质）" "" style
+run_pair "layout（列布局与宫格预览）" "" layout
 case_config
 
 echo
@@ -283,7 +388,22 @@ echo "── 有副作用的命令（隔离落盘 + 比对生成的文件）─�
 run_pair_stateful "init" "DOCKGROUP_HOME=$TMPHOME" "" init
 run_pair_stateful "init：配置已存在" "DOCKGROUP_HOME=$TMPHOME" "existing" init
 run_pair_stateful "init --force：覆盖" "DOCKGROUP_HOME=$TMPHOME" "existing" init --force
+STYLE_ENV="DOCKGROUP_HOME=$TMPHOME DOCKGROUP_DOCK_PLIST=$TMPHOME/dock.plist"
+# ⚠️ `dg style` 管的是**面板材质**（MATERIALS），不是图标风格（graphite / paper / …）。
+# 这两个东西在配置里都叫 "style"，很容易写错 —— 用 "paper" 会走进「没有这个材质」
+# 那条分支，看着是绿的，其实测的是错误路径。
+run_pair_stateful "style 测试组 popover" "$STYLE_ENV" "grouped" style 测试组 popover
+run_pair_stateful "style 测试组 default" "$STYLE_ENV" "grouped" style 测试组 default
+run_pair_stateful "style --all menu" "$STYLE_ENV" "grouped" style --all menu
+run_pair_stateful "layout --all dock-grid" "$STYLE_ENV" "grouped" layout --all dock-grid
+run_pair_stateful "layout 不存在组" "$STYLE_ENV" "grouped" layout 没有这个组 auto
+run_pair_stateful "style 不存在的材质" "$STYLE_ENV" "grouped" style 测试组 没有这个材质
 rm -rf "$TMPHOME"
+
+echo
+echo "── Dock 写入（比写出的配置字节，不碰真 Dock）──"
+case_dock_sync ""
+case_dock_sync "--keep-originals"
 
 echo
 echo "── 像素对照（阈值 MAE < ${PIXEL_MAX}）──"
@@ -297,6 +417,10 @@ rm -rf "$PX"
 echo
 echo "── .app 构建（用 __build-group，不触发 killall Dock）──"
 case_launcher_app
+
+echo
+echo "── rebuild（完整 refresh_groups，killall 已由测试开关关掉）──"
+case_rebuild
 
 echo
 if [ "$fail" -eq 0 ]; then

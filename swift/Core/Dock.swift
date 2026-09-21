@@ -9,17 +9,28 @@ import Foundation
 /// 同一次命令里反复读没意义，缓存住（Python 那边也一样）。
 private var _dockCache: [String: Any]?
 
+/// 写盘之后同步缓存，避免同一条命令里读到旧值。
+func _dockCacheSet(_ pl: [String: Any]) { _dockCache = pl }
+
 /// 读 Dock 配置。
 ///
 /// 走 `defaults export` 起子进程 —— 和 Python 版**同一条路**，
 /// 保证迁移期两边读到的东西完全一样（对照测试才有意义）。
 /// 全 Swift 之后可以换成 `UserDefaults(suiteName: "com.apple.dock")`，
 /// 但那要先验证 cfprefsd 的缓存语义一致，别顺手改。
+///
+/// 设了 `DOCKGROUP_DOCK_PLIST` 时改读那个文件（对照测试用，见 DockSync.swift）。
 func dockRead(refresh: Bool = false) -> [String: Any] {
     if let c = _dockCache, !refresh { return c }
-    let data = run("/usr/bin/defaults", ["export", DOCK_DOMAIN, "-"]).out
-    let pl = (try? PropertyListSerialization.propertyList(from: data, options: [], format: nil))
-        as? [String: Any] ?? [:]
+
+    let pl: [String: Any]
+    if let override = dockPlistOverride {
+        pl = readPlistDict(override) ?? [:]
+    } else {
+        let data = run("/usr/bin/defaults", ["export", DOCK_DOMAIN, "-"]).out
+        pl = (try? PropertyListSerialization.propertyList(from: data, options: [], format: nil))
+            as? [String: Any] ?? [:]
+    }
     _dockCache = pl
     return pl
 }
