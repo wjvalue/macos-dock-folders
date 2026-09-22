@@ -53,8 +53,13 @@ iPhone 早就用文件夹解决了，而 macOS **从来没把这个交互搬过�
 到 [Releases](https://github.com/wjvalue/macos-dock-folders/releases) 下载
 `DockGroup-vX.Y.Z-macos.zip`，解压出 `DockGroup.app`，双击即可：
 
-- 首次打开**会被 Gatekeeper 拦一次**（ad-hoc 签名 + 隔离标记，没有开发者账号没法公证）
-  —— 右键 →「打开」放行一次，之后就正常双击；
+- 首次打开**会被 Gatekeeper 拦一次**（ad-hoc 签名 + 隔离标记，没有开发者账号没法公证）。
+  放行方式看你的 macOS 版本：
+  - **macOS 14 及更早**：右键 →「打开」→ 再点一次「打开」；
+  - **macOS 15+（含 26）**：右键已经**没有**「打开」旁路了。两个办法任选：
+    ① 点掉拦截弹窗后，去 **系统设置 → 隐私与安全性**，拉到底部「安全性」区，
+    会有「"DockGroup" 已被阻止」一行 → 点 **「仍要打开」** → 验证密码 / Touch ID；
+    ② 终端一条命令：`xattr -cr`（把 `DockGroup.app` 拖进终端窗口补全路径）；
 - 它会自己把引擎（universal 二进制）、预编译启动器 / 管理窗口装到位
   （`~/.local/bin/dg` + `~/Library/Application Support/DockGroup/`），
   然后自动打开分组管理窗口。**不需要 Command Line Tools、不需要 Python 和 Pillow**；
@@ -129,17 +134,17 @@ macOS 只对**从网络下载来的**文件打 `com.apple.quarantine` 标记。�
 | 你怎么拿到这份代码 | 会不会被拦 | 怎么办 |
 |---|---|---|
 | `git clone` | **不会**。git 不写隔离标记 | 直接用 |
-| 下载 `DockGroup-vX.Y.Z-macos.zip` | 会 | 右键 →「打开」，放行一次即可（App 自己会把拷贝产物的标记清掉） |
+| 下载 `DockGroup-vX.Y.Z-macos.zip` | 会 | macOS 14 及更早：右键 →「打开」；macOS 15+：系统设置 → 隐私与安全性 →「仍要打开」，或 `xattr -cr "那个.app"`（App 自己会把拷贝产物的标记清掉） |
 | 下载 zip 解压 | 会（整个目录都带标记） | 双击 `tools/install.command`，或在仓库根目录跑 `xattr -cr .` |
-| 别人直接给你 `.app` | 会 | 右键 →「打开」；或 `xattr -cr "那个.app"` |
+| 别人直接给你 `.app` | 会 | 同第一行「下载 .macos.zip」的处理 |
 
 构建流程本身还有一道兜底：每次生成分组启动器 / 管理窗口都会清一遍隔离标记，
 所以哪怕源码是下载来的，产物也是干净的。`dg doctor` 会报告签名身份和隔离状态。
 
 > **为什么不做 Apple 签名和公证**：那需要 Apple Developer 账号（$99/年）。这个项目
 > 是个人开源，所以用 ad-hoc 签名（`codesign -s -`）。ad-hoc 签名本机自用完全没问题 ——
-> 从网络下载的 `.app` 首次打开会被 Gatekeeper 拦一次（方式 A 也一样），右键 →「打开」
-> 放行即可；想彻底无感，只能等有开发者账号后做公证。
+> 从网络下载的 `.app` 首次打开会被 Gatekeeper 拦一次（方式 A 也一样），按上面的
+> 版本对号入座放行即可；想彻底无感，只能等有开发者账号后做公证。
 
 ---
 
