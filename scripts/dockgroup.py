@@ -85,7 +85,7 @@ import urllib.parse
 from datetime import datetime
 from pathlib import Path
 
-__version__ = "1.2.1"
+__version__ = "1.2.2"
 
 try:
     from PIL import Image, ImageDraw, ImageFilter, ImageFont
