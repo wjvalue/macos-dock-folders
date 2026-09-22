@@ -836,3 +836,25 @@ swiftc 找不到文件直接退出 —— 尽管 dg 二进制本身是全功能�
 **别踩的**：缓存副本和 `.bin`、`.src-stamp` 必须来自同一棵源码树 ——
 发布包由 `tools/build-release.sh` 从 HEAD 构建，天然一致；本地手工换过
 其中一个就要三个一起换。
+
+## 22. 「下载即用」.app 的四个暗坑（bootstrap / build-app.sh）
+
+2026-09-22 加 `swift/Bootstrap/main.swift` + `tools/build-app.sh` 时踩的：
+
+1. **Foundation 的 `homeDirectoryForCurrentUser` 不跟随 `$HOME` 环境变量**
+   （实测两次都返回 passwd 条目里的真实家目录）。bootstrap 想用假 HOME 做
+   沙箱测试就必须显式 `getenv("HOME")`；子进程 `dg` 走的是 Paths.swift 的
+   homeDirectoryForCurrentUser，改不了 —— 所以 bootstrap 给子进程显式传
+   `DOCKGROUP_REPO` / `DOCKGROUP_HOME`，两边落点严格一致，测试与生产同一条路。
+2. **载荷源必须是 git archive（HEAD），不是工作树**。`.app` 里 `Resources/repo/`
+   的源码要和 prebuilt.zip 里的逐字节一致 —— 摘要戳按内容算，两边源码一有
+   漂移，缓存判定就乱。所以 build-app.sh 从 build-release.sh 的 STAGE 目录拿
+   载荷，而 STAGE 由 `git archive HEAD` 生成 → 发版必须「先 commit 再构建」。
+3. **git 不追踪 `prebuilt/`**（`git ls-files prebuilt/` 为空），git archive 出来
+   的树里没有它 —— 靠 build-release.sh 第⑤步 `cp -R "$OUT/prebuilt"` 补进去。
+   以为「archive 里自然有」的话，组装出的 .app 载荷会缺 .bin。
+4. **验证「缓存命中、没重编译」别拿 `cmp` 直接比签名前后二进制**：build 出的
+   bin 进 .app 后要过 `codesign`，签名块（universal 两个架构，实测 +47KB）
+   写进可执行文件，字节必然不同；而 `codesign --remove-signature` 会重排
+   Mach-O（大小还会变），剥签后比较同样不可信。可信的判据：**大小差恒等于
+   签名块、mtime 与种子同一秒、总耗时不可能是 swiftc 的 6 秒**。

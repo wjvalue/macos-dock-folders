@@ -49,9 +49,20 @@ iPhone 早就用文件夹解决了，而 macOS **从来没把这个交互搬过�
 
 ## 安装
 
-**方式 A（推荐）：下载预编译发布包 —— 解压、双击，全程不用终端。**
+**方式 A（推荐）：下载 `DockGroup.app` —— 双击即用，解压都不用进终端。**
 到 [Releases](https://github.com/wjvalue/macos-dock-folders/releases) 下载
-`dockgroup-vX.Y.Z-prebuilt.zip`，解压后双击 `tools/install.command`，它一条龙做完：
+`DockGroup-vX.Y.Z-macos.zip`，解压出 `DockGroup.app`，双击即可：
+
+- 首次打开**会被 Gatekeeper 拦一次**（ad-hoc 签名 + 隔离标记，没有开发者账号没法公证）
+  —— 右键 →「打开」放行一次，之后就正常双击；
+- 它会自己把引擎（universal 二进制）、预编译启动器 / 管理窗口装到位
+  （`~/.local/bin/dg` + `~/Library/Application Support/DockGroup/`），
+  然后自动打开分组管理窗口。**不需要 Command Line Tools、不需要 Python 和 Pillow**；
+- 之后每次双击 = 确认安装（幂等，重复双击就是升级）+ 打开管理窗口。
+  把它拖进「应用程序」，它就是你的常驻入口。
+
+**方式 B：下载预编译发布包 —— 解压、双击 `install.command`，全程只碰一次终端。**
+下载 `dockgroup-vX.Y.Z-prebuilt.zip`，解压后双击 `tools/install.command`，它一条龙做完：
 
 1. 装 `dg` 命令（universal 二进制，Apple Silicon / Intel 通吃）
 2. 把启动器 / 管理窗口的预编译二进制预置进缓存，之后 `apply` 现场免编译
@@ -63,9 +74,9 @@ iPhone 早就用文件夹解决了，而 macOS **从来没把这个交互搬过�
 > **引擎说明**：`dg` 的 20 个命令已全部用 Swift 重写，预编译包里就是编译好的
 > 二进制。源码安装保留一条 Python 回退路径（`scripts/dockgroup.py`），两套实现
 > 有逐字节对照测试（`tools/compare_cli.sh`）把关，行为一致 —— Python 版待
-> 预编译分发稳定后退役，日常使用建议走方式 A。
+> 预编译分发稳定后退役，日常使用建议走方式 A 或 B。
 
-**方式 B：源码安装。** 适合想改代码的人。依赖就下面这些。
+**方式 C：源码安装。** 适合想改代码的人。依赖就下面这些。
 **Pillow 不在 macOS 自带依赖里**，需要单独装一次 ——
 也是唯一一个得手动补的（`tools/install.command` 会发现缺了并顺手装上）。
 
@@ -118,6 +129,7 @@ macOS 只对**从网络下载来的**文件打 `com.apple.quarantine` 标记。�
 | 你怎么拿到这份代码 | 会不会被拦 | 怎么办 |
 |---|---|---|
 | `git clone` | **不会**。git 不写隔离标记 | 直接用 |
+| 下载 `DockGroup-vX.Y.Z-macos.zip` | 会 | 右键 →「打开」，放行一次即可（App 自己会把拷贝产物的标记清掉） |
 | 下载 zip 解压 | 会（整个目录都带标记） | 双击 `tools/install.command`，或在仓库根目录跑 `xattr -cr .` |
 | 别人直接给你 `.app` | 会 | 右键 →「打开」；或 `xattr -cr "那个.app"` |
 
@@ -126,8 +138,8 @@ macOS 只对**从网络下载来的**文件打 `com.apple.quarantine` 标记。�
 
 > **为什么不做 Apple 签名和公证**：那需要 Apple Developer 账号（$99/年）。这个项目
 > 是个人开源，所以用 ad-hoc 签名（`codesign -s -`）。ad-hoc 签名本机自用完全没问题 ——
-> 只有「把 `.app` 二进制直接发给别人」才会撞上上面的拦截，而推荐的分发方式
-> （源码 + 本地构建）本来就不受影响。
+> 从网络下载的 `.app` 首次打开会被 Gatekeeper 拦一次（方式 A 也一样），右键 →「打开」
+> 放行即可；想彻底无感，只能等有开发者账号后做公证。
 
 ---
 

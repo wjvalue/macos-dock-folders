@@ -52,6 +52,8 @@ tools/compare_cli.sh    # 跑对照测试
 ```
 main.swift            入口与命令分发
 build.sh              编译脚本（把仓库位置烧进二进制）
+Bootstrap/
+  main.swift          DockGroup.app 的入口（自安装 + 拉起管理窗口，见 tools/build-app.sh）
 Core/
   Paths.swift         路径常量（照抄 dockgroup.py 顶部那组定义）
   JSON.swift          有序 JSON 的解析与序列化

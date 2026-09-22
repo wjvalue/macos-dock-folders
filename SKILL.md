@@ -41,10 +41,16 @@ chmod +x ~/.local/bin/dg          # 确认 ~/.local/bin 在 PATH 里
 > 双击 `tools/install.command`（清隔离 + 装 dg + 体检一条龙，**不会覆盖已有的 dg**），
 > 或在仓库根目录 `xattr -cr .`。
 >
+> **给普通用户的最简路径**（v1.3.0+）：Releases 里的 `DockGroup-vX.Y.Z-macos.zip`
+> 解压出 `DockGroup.app`，右键 →「打开」放行一次即可 —— 它自带 universal 引擎和
+> 预编译启动器/管理窗口，双击时自安装（`~/.local/bin/dg` +
+> `~/Library/Application Support/DockGroup/`）并打开管理窗口，**不需要 CLT /
+> Python / Pillow**；重复双击 = 幂等升级。
+>
 > 本项目用 **ad-hoc 签名**（`codesign -s -`）：没有 Apple 开发者账号（$99/年），
-> 所以不做签名与公证。ad-hoc 本机自用完全够 —— 只有把 `.app` 二进制直接发给别人才
-> 会被拦，推荐的分发方式是「源码 + 本地构建」，不受影响。构建流程每次都会清一遍
-> 隔离标记兜底；`dg doctor` 末尾会报告签名身份和产物隔离状态。
+> 所以不做签名与公证。ad-hoc 本机自用完全够 —— 从网络下载的 `.app` 首开会被
+> Gatekeeper 拦一次（`DockGroup.app` 也一样），右键 →「打开」放行即可。构建流程
+> 每次都会清一遍隔离标记兜底；`dg doctor` 末尾会报告签名身份和产物隔离状态。
 
 ```bash
 dg                      # 不带参数 = 帮助 + 当前分组状态
