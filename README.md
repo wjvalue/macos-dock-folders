@@ -574,7 +574,7 @@ Dock 支持把文件夹放进去（Stack），但它有个硬限制：
 | 面板四角有直角块 | 已修：圆角得一路裁到窗口层（theme frame + 毛玻璃 `maskImage` + `invalidateShadow`），只给内容视图设圆角不够 |
 | 换了图标风格但 Dock 上还是旧图（点一下才变） | 已修（1.3.1）：Dock/LaunchServices 按 icns **文件路径**缓存图标，内容变了名字不变就不刷 → 现在图标一变 icns 就换带摘要后缀的新文件名（`AppIcon-<摘要>.icns`），apply 完立即生效 |
 | 每次 `apply` 后手动拖的分组顺序被弹回原位 | 已修（1.3.1）：分组已在 Dock 上时**原地替换**保住手动排序；配置里的 `after` 锚点只在分组首次落位时生效。想让某分组重新按 `after` 落位：`dg remove <组名>` 再 `dg apply` |
-| 每次点「应用到 Dock」都全屏闪一下 | Dock 重启只能整体重启，**有变更时这一下免不了**；但配置没变时现在会跳过重启（1.3.1 起），连续点两下只有第一下会闪 |
+| 每次点「应用到 Dock」都全屏闪一下 | **零闪模式（1.3.1 起）**：Dock 条配置没变时（含只改图标风格/成员这类纯图标变化）跳过重启，完全不闪 —— 新图标会在你下次**点击分组图标**的瞬间显示，GUI 预览始终是即时的。只有 Dock 条本身变化（加删分组、改位置/布局/材质）才重启，那一下是 Dock 进程重启的物理闪烁，无法消除 |
 | 换了 material 但面板没变化 | ① `appearance` 必须设在毛玻璃视图上，只设 window 无效；② `bundle-stamp` 缓存跳过了重写 → `rm ~/Dock\ Groups/.cache/*.bundle-stamp` 再 `dg rebuild` |
 | 改了布局 / 材质，点开面板还是老样子 | ① **最常见：旧的面板进程还在跑。** 启动器收起后要常驻一小段时间（否则 Dock 会报「已不能再打开」），而它的布局是**进程启动时**读进内存的，之后重建 bundle 也影响不到它 → `dg apply` / `dg rebuild` / `dg add` 都会自动结束旧进程，但手工改 bundle 不会。自查：`pgrep -lf DockGroupLauncher`，有残留就 `pkill -f DockGroupLauncher`；② **这个分组自己写了 `layout` / `style` / `material`，覆盖了全局** → 管理窗口里这类分组会标一个橙色滑块图标，右栏写明覆盖了什么并给一键「改回跟随全局」；命令行用 `dg layout` 看每个分组的实际模式、`dg layout 组名 default` 清掉覆盖；③ `bundle-stamp` 缓存跳过了重建 → `rm ~/Dock\ Groups/.cache/*.bundle-stamp` 再 `dg rebuild`；④ `dg logs <组名>` 里 `panel: layout=[…] grid=…x…` 一行能直接对账 |
 | 图标没跟着文件夹内容变 | `dg rebuild` |

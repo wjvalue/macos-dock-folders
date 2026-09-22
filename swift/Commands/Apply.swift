@@ -63,8 +63,9 @@ func cmdApply(_ cfg: JSONObject, _ args: [String]) {
     // （cmd_apply 里是 `dock_sync(cfg, only=None, prune=not keep)`）。
     // 看着像笔误，但这是原版行为：sync 阶段一律处理**所有** enabled 分组，
     // 免得只 apply 一个分组时把别的分组的图标从 Dock 上漏掉。
+    // rebuilt 只做提示用（零闪模式）：Dock 条没变时不重启，点图标即见新样式。
     do {
-        try dockSync(cfg, only: nil, prune: !keep, forceRestart: anyRebuilt)
+        try dockSync(cfg, only: nil, prune: !keep, rebuilt: anyRebuilt)
     } catch let e as DgError {
         FileHandle.standardError.write("\(e.message)\n".data(using: .utf8)!)
         exit(1)

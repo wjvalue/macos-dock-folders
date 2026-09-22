@@ -798,8 +798,9 @@ struct MemberTile: View {
                             .shadow(color: .black.opacity(0.25), radius: 1, y: 0.5)
                         }
                         .buttonStyle(.plain)
-                        // 往图标内收着放：不超出图标边界，就不会被任何父视图裁掉
-                        .offset(x: 3, y: -3)
+                        // 完全收在图标边界内（topTrailing 对齐后再往里收 1pt）：
+                        // 之前 offset(+3,-3) 探出图标右上角，实测仍会被裁掉一角
+                        .offset(x: -1, y: 1)
                         .help("从分组里移除（只删别名）")
                     }
                 }

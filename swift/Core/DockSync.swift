@@ -38,7 +38,8 @@ var dockPlistOverride: URL? {
 /// 深比较，完全一致就整段跳过。bookmark 字节已实测同引擎内确定（2026-09-22，
 /// 同一 bundle 两次 bookmarkData 逐字节相等），可以放心当「内容没变」的判据；
 /// 就算哪天系统让它变得不确定，最坏也只是退回「每次都重启」的旧行为，不会错。
-func dockWrite(_ pl: [String: Any], forceRestart: Bool = false) throws {
+func dockWrite(_ pl: [String: Any], rebuiltHint: Bool = false,
+               finderRestart: Bool = true) throws {
     if ProcessInfo.processInfo.environment["DOCKGROUP_SKIP_DOCK"] == "1" {
         print("已跳过 Dock 写入（DOCKGROUP_SKIP_DOCK=1）")
         return
@@ -50,13 +51,34 @@ func dockWrite(_ pl: [String: Any], forceRestart: Bool = false) throws {
     // 注意必须 refresh 直读，不能用 _dockCache —— 缓存可能是同一条命令早前写的。
     // 替身模式（DOCKGROUP_DOCK_PLIST）也走这一条：替身文件没变同样不写。
     //
-    // ⚠️ forceRestart 例外：bundle 重建后图标变了，但 Dock plist 条目本身
-    // （bundle id / label / bookmark）不变，深比较会误判成「没变化」——
-    // 这时必须照写照重启，否则 Dock 上永远是旧图标。
-    if !forceRestart,
-       let current = dockRead(refresh: true) as NSDictionary?,
-       (pl as NSDictionary).isEqual(current) {
-        print("Dock 配置无变化，跳过重启")
+    // ⚠️ rebuildHint（2026-09-22 零闪模式）：bundle 重建后图标变了，但 Dock plist
+    // 条目本身（bundle id / label / bookmark）不变 —— 这种「纯图标变化」**不重启
+    // Dock**：killall 的黑帧+暗淡就是老大说的「闪两次」，而新版 icns 文件名保证了
+    // 下次点击分组图标时立即显示新样式（实测确认）。dock.plist 变了才值得闪。
+    // 比较用的副本：剥掉 tile-data["book"]。bookmark 是 bundle 内容的指纹，
+    // 图标一变它就变 —— 但纯图标变化（icns 文件名已换新）根本不需要动 Dock 条，
+    // 更不需要重启；把它算进「有变化」会白白闪一次。
+    func normalized(_ pl: [String: Any]) -> NSDictionary {
+        var copy = pl
+        for key in ["persistent-apps", "persistent-others"] {
+            guard let tiles = pl[key] as? [[String: Any]] else { continue }
+            copy[key] = tiles.map { t in
+                guard var td = t["tile-data"] as? [String: Any] else { return t }
+                td.removeValue(forKey: "book")
+                var t2 = t
+                t2["tile-data"] = td
+                return t2
+            }
+        }
+        return copy as NSDictionary
+    }
+
+    if normalized(pl).isEqual(normalized(dockRead(refresh: true))) {
+        if rebuiltHint {
+            print("Dock 配置无变化，跳过重启（已重建的图标将在下次点击分组图标时显示）")
+        } else {
+            print("Dock 配置无变化，跳过重启")
+        }
         _dockCacheSet(pl)
         return
     }
@@ -77,7 +99,12 @@ func dockWrite(_ pl: [String: Any], forceRestart: Bool = false) throws {
     }
     _dockCacheSet(pl)
     run("/usr/bin/killall", ["Dock"])
-    run("/usr/bin/killall", ["Finder"])
+    // Finder 重启是「全屏闪第二次」的来源（桌面整个重绘）。只有动了分隔线
+    // 右侧的文件夹 Stack（文件夹自定义图标需要 Finder 刷新）才值得付这个代价；
+    // 左侧启动器分组跟 Finder 无关，不杀。（2026-09-22 老大报「闪两次」。）
+    if finderRestart {
+        run("/usr/bin/killall", ["Finder"])
+    }
 }
 
 private extension DateFormatter {
@@ -156,7 +183,7 @@ private func insertAfter(_ tiles: inout [[String: Any]], _ tile: [String: Any],
 ///   after=<App 路径>  → 可选，显式指定插在哪个 App 后面，覆盖自动落位
 @discardableResult
 func dockSync(_ cfg: JSONObject, only: Set<String>? = nil, prune: Bool = true,
-              forceRestart: Bool = false) throws -> [String] {
+              rebuilt: Bool = false) throws -> [String] {
     let tg = syncTargets(cfg, only: only)
     let pl = dockRead()
     let managed = Set(cfg.groups.map { $0.name })
@@ -272,7 +299,9 @@ func dockSync(_ cfg: JSONObject, only: Set<String>? = nil, prune: Bool = true,
     var out = pl
     out["persistent-apps"] = left
     out["persistent-others"] = right
-    try dockWrite(out, forceRestart: forceRestart)
+    // Finder 只有在动了右侧文件夹 Stack 时才需要重启（见 dockWrite 内注释）
+    try dockWrite(out, rebuiltHint: rebuilt,
+                  finderRestart: tg.contains { $0.placement == "right" })
     return tg.map { $0.name }
 }
 

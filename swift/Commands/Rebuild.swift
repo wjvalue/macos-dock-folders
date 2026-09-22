@@ -48,7 +48,15 @@ func refreshGroups(_ cfg: JSONObject, names: [String]? = nil, quiet: Bool = fals
         killLaunchers()
         if dockPlistOverride == nil {       // 对照测试模式下不碰真实 Dock
             run("/usr/bin/killall", ["Dock"])
-            run("/usr/bin/killall", ["Finder"])
+            // Finder 重启 = 全屏闪第二次，只在有右侧文件夹 Stack 时付这个代价
+            let rightTouched = cfg.groups.contains { g in
+                g.placement == "right"
+                    && (names == nil || names!.contains(g.name))
+                    && touched.contains(g.name)
+            }
+            if rightTouched {
+                run("/usr/bin/killall", ["Finder"])
+            }
         }
     }
     if !quiet {
