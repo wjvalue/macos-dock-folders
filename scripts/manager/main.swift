@@ -236,11 +236,22 @@ extension Config {
 
 @MainActor
 final class AppModel: ObservableObject {
+    /// 外观三项的作用范围（2026-09-22 加）：
+    ///   · group  —— 只改左边选中的分组（写进该分组的覆盖字段）。
+    ///     老大报的原问题：不管左边选了啥，改风格/材质/排列都是全局生效，不合理。
+    ///   · global —— 改全局默认（没写覆盖的分组都会跟着变）。
+    enum AppearanceScope: String, CaseIterable, Identifiable {
+        case group = "当前分组"
+        case global = "全局默认"
+        var id: String { rawValue }
+    }
+
     @Published var groups: [AppGroup] = []
     @Published var selection: String?
     @Published var style = "graphite"
     @Published var material = "hud"
     @Published var layout = "row"
+    @Published var scope: AppearanceScope = .group
 
     /// 有没有 groups.json —— 没有就走首屏引导（跑一次 dg init）。
     @Published var installed = false
@@ -284,6 +295,29 @@ final class AppModel: ObservableObject {
         groups.firstIndex { $0.name == name }
     }
 
+    // ── 生效值（picker 显示什么）──
+    //
+    // 分组范围下显示「分组覆盖，没有则全局」—— 跟引擎 groupStyle/groupMaterial/
+    // groupLayout 的取值规则一致，眼睛看到的和 Dock 上跑的是同一套。
+
+    var effectiveStyle: String {
+        (scope == .group ? current?.style : nil) ?? style
+    }
+
+    var effectiveMaterial: String {
+        (scope == .group ? current?.material : nil) ?? material
+    }
+
+    var effectiveLayout: String {
+        (scope == .group ? current?.layout : nil) ?? layout
+    }
+
+    /// 当前范围下这个 picker 该不该显示「跟随全局」的占位。
+    /// 分组范围 + 分组没写覆盖时，显示的就是全局值本身，不用占位。
+    var editingGroupOverride: Bool {
+        scope == .group && current != nil
+    }
+
     // ── 写 ──
 
     /// 落盘 groups.json。这是唯一由 GUI 直接写文件的地方 ——
@@ -299,7 +333,8 @@ final class AppModel: ObservableObject {
     /// （GUI 根本不显示分组级覆盖）。现在两条都修了：这里默认不碰 groups，
     /// 分组行上也会标出「有自定义外观」。
     ///
-    /// 确实要动分组结构时（开关分组 / 新建 / 删除）显式传 `refreshGroups: true`。
+    /// 确实要动分组结构时（开关分组 / 新建 / 删除 / 写分组级覆盖）显式传
+    /// `refreshGroups: true`。
     func save(refreshGroups: Bool = false) {
         var disk = readDisk() ?? Config(groups: groups)
         disk.style = style
@@ -332,6 +367,7 @@ final class AppModel: ObservableObject {
         groups[i].style = nil
         groups[i].material = nil
         save(refreshGroups: true)
+        preview()
     }
 
     // 外观三项。改动都立刻落盘 groups.json —— 两个原因：
@@ -339,21 +375,40 @@ final class AppModel: ObservableObject {
     //      不先写文件就会「换了风格但预览纹丝不动」；
     //   ② dirty 要立刻置起来，否则用户不知道还得点一下「应用到 Dock」。
     // 注意落盘 ≠ 生效：Dock 上真正跑了什么由「应用到 Dock」决定。
+    //
+    // 2026-09-22 起，写到哪由 scope 决定：分组范围写分组的覆盖字段
+    //（只改这一个分组），全局范围写顶层三项。分组范围下没选中任何分组
+    //（空配置）时退回全局，别让改动无声消失。
 
     func setStyle(_ v: String) {
-        style = v
-        save()
+        if editingGroupOverride, let n = selection, let i = index(of: n) {
+            groups[i].style = v
+            save(refreshGroups: true)
+        } else {
+            style = v
+            save()
+        }
         preview()
     }
 
     func setMaterial(_ v: String) {
-        material = v
-        save()
+        if editingGroupOverride, let n = selection, let i = index(of: n) {
+            groups[i].material = v
+            save(refreshGroups: true)
+        } else {
+            material = v
+            save()
+        }
     }
 
     func setLayout(_ v: String) {
-        layout = v
-        save()
+        if editingGroupOverride, let n = selection, let i = index(of: n) {
+            groups[i].layout = v
+            save(refreshGroups: true)
+        } else {
+            layout = v
+            save()
+        }
     }
 
     // ── 跑引擎 ──
@@ -725,19 +780,29 @@ struct MemberTile: View {
 
     var body: some View {
         VStack(spacing: 5) {
-            ZStack(alignment: .topTrailing) {
-                AppIcon(path: path, size: 46)
-                if hovering {
-                    Button(action: onRemove) {
-                        Image(systemName: "minus.circle.fill")
-                            .font(.system(size: 13))
-                            .foregroundStyle(Color.white, Color.red)
+            AppIcon(path: path, size: 46)
+                .overlay(alignment: .topTrailing) {
+                    if hovering {
+                        Button(action: onRemove) {
+                            // 自己画「红圆 + 白减号」，不用 minus.circle.fill ——
+                            // 那个符号的减号是**挖空**（透出底下的图标），2026-09-22
+                            // 老大报的「减号被遮住一半」就是它：透出来的是 Notes 的
+                            // 黄底，看着像被盖住了。自绘的白色减号是实心的，不挑背景。
+                            ZStack {
+                                Circle().fill(Color.red)
+                                Image(systemName: "minus")
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundStyle(.white)
+                            }
+                            .frame(width: 15, height: 15)
+                            .shadow(color: .black.opacity(0.25), radius: 1, y: 0.5)
+                        }
+                        .buttonStyle(.plain)
+                        // 往图标内收着放：不超出图标边界，就不会被任何父视图裁掉
+                        .offset(x: 3, y: -3)
+                        .help("从分组里移除（只删别名）")
                     }
-                    .buttonStyle(.plain)
-                    .offset(x: 7, y: -5)
-                    .help("从分组里移除（只删别名）")
                 }
-            }
             Text(displayName(path))
                 .font(.system(size: 11))
                 .lineLimit(1)
@@ -765,20 +830,37 @@ struct Inspector: View {
 
             previewCard
 
+            // 作用范围：默认只改左边选中的分组；要动全局就切过去。
+            // 没选中任何分组（空配置）时禁用分组档。
+            Picker("", selection: Binding(
+                get: { model.scope },
+                set: { model.scope = $0 }
+            )) {
+                ForEach(AppModel.AppearanceScope.allCases) { s in
+                    Text(s.rawValue).tag(s)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .help("决定下面三项改的是选中分组还是全局默认")
+
             VStack(alignment: .leading, spacing: 12) {
                 picker("图标风格", selection: Binding(
-                    get: { model.style }, set: { model.setStyle($0) }), options: kStyles)
+                    get: { model.effectiveStyle }, set: { model.setStyle($0) }), options: kStyles)
                 picker("面板材质", selection: Binding(
-                    get: { model.material }, set: { model.setMaterial($0) }), options: kMaterials)
+                    get: { model.effectiveMaterial }, set: { model.setMaterial($0) }), options: kMaterials)
                 picker("面板排列", selection: Binding(
-                    get: { model.layout }, set: { model.setLayout($0) }), options: kLayouts)
+                    get: { model.effectiveLayout }, set: { model.setLayout($0) }), options: kLayouts)
             }
             .padding(.horizontal, 16)
             .padding(.top, 16)
 
-            // 分组级覆盖提示。引擎（或命令行）可能给某个分组单独设过外观，那它就不
-            // 跟随上面三项 —— 不摊开说，用户只会以为「设置失灵了」。
-            if let g = model.current, g.hasOverrides {
+            // 分组级覆盖提示。全局范围下，分组自己的覆盖会让上面三项「看起来没生效」
+            // —— 不摊开说，用户只会以为设置失灵了。分组范围下 picker 显示的
+            // 就是这个分组自己的值，不存在被覆盖遮蔽的问题。
+            if model.scope == .global, let g = model.current, g.hasOverrides {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("「\(g.name)」有自定义外观（\(overrideSummary(g))），不跟随上面三项")
                         .font(.system(size: 11))
@@ -792,6 +874,15 @@ struct Inspector: View {
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.12)))
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
+            }
+
+            // 分组范围下提醒一句现在改的是谁，免得以为还是全局。
+            if model.scope == .group, let g = model.current {
+                Text("正在修改「\(g.name)」的外观\(g.hasOverrides ? "（已自定义）" : "，目前跟随全局")")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
             }
 
             if model.dirty {

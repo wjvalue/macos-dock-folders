@@ -32,13 +32,34 @@ var dockPlistOverride: URL? {
 /// 给 CI / 脚本化场景一个「只生成产物、绝不打扰 Dock」的总开关。
 /// 与 DOCKGROUP_DOCK_PLIST 的区别：那个是**重定向**到替身文件，这个是**什么都不做**。
 /// Python 版 dock_write 有同款开关，两边行为必须一致。
-func dockWrite(_ pl: [String: Any]) throws {
+///
+/// 「应用到 Dock」最让人烦的是**每次都全屏闪一下**（killall Dock 重启整个 Dock）。
+/// 其实在配置一个字都没变的时候，重启纯属白闪 —— 所以写入前先和当前配置做一次
+/// 深比较，完全一致就整段跳过。bookmark 字节已实测同引擎内确定（2026-09-22，
+/// 同一 bundle 两次 bookmarkData 逐字节相等），可以放心当「内容没变」的判据；
+/// 就算哪天系统让它变得不确定，最坏也只是退回「每次都重启」的旧行为，不会错。
+func dockWrite(_ pl: [String: Any], forceRestart: Bool = false) throws {
     if ProcessInfo.processInfo.environment["DOCKGROUP_SKIP_DOCK"] == "1" {
         print("已跳过 Dock 写入（DOCKGROUP_SKIP_DOCK=1）")
         return
     }
 
     let data = try plistData(pl)
+
+    // 无变化检测：用语义比较（NSDictionary 深比较），键序无关。
+    // 注意必须 refresh 直读，不能用 _dockCache —— 缓存可能是同一条命令早前写的。
+    // 替身模式（DOCKGROUP_DOCK_PLIST）也走这一条：替身文件没变同样不写。
+    //
+    // ⚠️ forceRestart 例外：bundle 重建后图标变了，但 Dock plist 条目本身
+    // （bundle id / label / bookmark）不变，深比较会误判成「没变化」——
+    // 这时必须照写照重启，否则 Dock 上永远是旧图标。
+    if !forceRestart,
+       let current = dockRead(refresh: true) as NSDictionary?,
+       (pl as NSDictionary).isEqual(current) {
+        print("Dock 配置无变化，跳过重启")
+        _dockCacheSet(pl)
+        return
+    }
 
     if let override = dockPlistOverride {
         try data.write(to: override)
@@ -123,14 +144,19 @@ private func insertAfter(_ tiles: inout [[String: Any]], _ tile: [String: Any],
 
 /// 把分组文件夹写进 Dock。
 ///
-/// 位置策略：文件夹落在「被折叠的第一个 App 原来所在的位置」，不需手工配锚点。
-/// （macOS 不允许拖文件夹进左侧 App 区，但手写 plist 是能被 Dock 接受的，实测通过。）
+/// 位置策略（2026-09-22 重写）：
+///   · 分组图标**已经在 Dock 上**的 → 原地替换，保住用户手动拖出来的顺序。
+///     （旧实现是「删掉再按第一个成员 App 的位置重插」，手动挪过的位置每次
+///     apply 都会被弹回原位 —— 老大报的 bug。）
+///   · 新分组仍落在「被折叠的第一个 App 原来所在的位置」，不需手工配锚点。
+///     （macOS 不允许拖文件夹进左侧 App 区，但手写 plist 是能被 Dock 接受的，实测通过。）
 ///
 ///   placement="left"  → 写进 persistent-apps（左侧 App 区）
 ///   placement="right" → 写进 persistent-others（分隔线右侧）
 ///   after=<App 路径>  → 可选，显式指定插在哪个 App 后面，覆盖自动落位
 @discardableResult
-func dockSync(_ cfg: JSONObject, only: Set<String>? = nil, prune: Bool = true) throws -> [String] {
+func dockSync(_ cfg: JSONObject, only: Set<String>? = nil, prune: Bool = true,
+              forceRestart: Bool = false) throws -> [String] {
     let tg = syncTargets(cfg, only: only)
     let pl = dockRead()
     let managed = Set(cfg.groups.map { $0.name })
@@ -154,10 +180,23 @@ func dockSync(_ cfg: JSONObject, only: Set<String>? = nil, prune: Bool = true) t
             || pset.contains(URL(fileURLWithPath: p).resolvingSymlinksInPath().path)
     }
 
-    // 自动落位：每组第一个 App 在原列表中的下标
+    // 待写入的分组按 placement 分桶；「已在 Dock 上」的标记出来，
+    // 它们不走 firstPos 自动落位（那正是把手动排序弹回去的元凶）。
+    var pendingLeft: [String: JSONObject] = [:]
+    var pendingRight: [String: JSONObject] = [:]
+    for g in tg {
+        if g.placement == "right" { pendingRight[g.name] = g } else { pendingLeft[g.name] = g }
+    }
+    func currentlyDocked(_ g: JSONObject) -> Bool {
+        original.contains { tileLabel($0) == g.name }
+            || ((pl["persistent-others"] as? [[String: Any]] ?? [])
+                .contains { tileLabel($0) == g.name })
+    }
+
+    // 自动落位：只给**还不在 Dock 上**的新分组算；锚 = 每组第一个 App 在原列表中的下标
     var firstPos: [Int: [JSONObject]] = [:]
     var fallback: [JSONObject] = []
-    for g in tg {
+    for g in tg where !currentlyDocked(g) {
         let pset = pathsOf[g.name] ?? []
         if let idx = original.firstIndex(where: { matches($0, pset) }) {
             firstPos[idx, default: []].append(g)
@@ -171,25 +210,60 @@ func dockSync(_ cfg: JSONObject, only: Set<String>? = nil, prune: Bool = true) t
         return !(prune && matches(t, allGrouped))
     }
 
+    var placed = Set<String>()        // 已经写进结果的分组名
+    var replacedInPlace = Set<String>()  // 其中「原地替换」的那部分 —— after 不再动它们
+
     var left: [[String: Any]] = []
     for (i, t) in original.enumerated() {
+        // 锚在这个下标的新分组：插在成员 App 前面（与旧版一致）
         for g in firstPos[i] ?? [] where g.placement != "right" {
             left.append(tileFor(g))
+            placed.insert(g.name)
+        }
+        if let l = tileLabel(t) {
+            if let g = pendingLeft[l] {
+                left.append(tileFor(g))       // 原地替换：位置就是用户现在看到的这个
+                placed.insert(l)
+                replacedInPlace.insert(l)
+                continue
+            }
+            if managed.contains(l) { continue }   // 分组被禁用/删除 → 照旧摘掉
         }
         if keepLeft(t) { left.append(t) }
     }
 
-    var right = (pl["persistent-others"] as? [[String: Any]] ?? []).filter { t in
-        if let l = tileLabel(t), managed.contains(l) { return false }
-        return !(tilePath(t) ?? "").hasPrefix(BASE.path)
+    var right: [[String: Any]] = []
+    for t in (pl["persistent-others"] as? [[String: Any]] ?? []) {
+        if let l = tileLabel(t) {
+            if let g = pendingRight[l] {
+                right.append(tileFor(g))      // 原地替换
+                placed.insert(l)
+                replacedInPlace.insert(l)
+                continue
+            }
+            if managed.contains(l) { continue }
+        }
+        if (tilePath(t) ?? "").hasPrefix(BASE.path) { continue }
+        right.append(t)
     }
 
+    // 没锚点的兜底：新分组按 placement 追加到对应区末尾（与旧版一致）
     for g in fallback {
         if g.placement == "right" { right.append(tileFor(g)) } else { left.append(tileFor(g)) }
+        placed.insert(g.name)
     }
 
-    // 显式 after 覆盖
-    for g in tg {
+    // placement 左右切换过、或其他边角情况：凡是 targets 里还没落位的，补到末尾
+    for g in tg where !placed.contains(g.name) {
+        if g.placement == "right" { right.append(tileFor(g)) } else { left.append(tileFor(g)) }
+        placed.insert(g.name)
+    }
+
+    // 显式 after 覆盖 —— **只对首次落位的分组生效**。
+    // 旧版每次 apply 都把所有配了 after 的分组拽回锚点，是「手动排序被重置」的
+    // 另一半元凶（每个分组默认都带 after）。现在：分组已经在 Dock 上的，用户拖
+    // 到哪就是哪；想重新按 after 落位，先 `dg remove` 再 apply。
+    for g in tg where !replacedInPlace.contains(g.name) {
         guard let anchor = g["after"]?.stringValue, !anchor.isEmpty else { continue }
         left.removeAll { tileLabel($0) == g.name }
         insertAfter(&left, tileFor(g), anchor: anchor)
@@ -198,7 +272,7 @@ func dockSync(_ cfg: JSONObject, only: Set<String>? = nil, prune: Bool = true) t
     var out = pl
     out["persistent-apps"] = left
     out["persistent-others"] = right
-    try dockWrite(out)
+    try dockWrite(out, forceRestart: forceRestart)
     return tg.map { $0.name }
 }
 

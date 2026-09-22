@@ -19,14 +19,21 @@ func cmdApply(_ cfg: JSONObject, _ args: [String]) {
         exit(1)
     }
 
-    let style = cfg.style
     let before = (dockRead()["persistent-apps"] as? [[String: Any]] ?? []).count
+
+    // 本轮有没有分组真的重建了 bundle。图标变了但 Dock plist 条目不变（bundle id、
+    // label、bookmark 都一样），无变化检测会误判成「没变化」—— 有重建就必须重启
+    // Dock，否则 Dock 上还是旧图标（2026-09-22 修）。
+    var anyRebuilt = false
 
     for g in targets {
         do {
             let dest: URL
             let okCount: Int
             let missing: [String]
+            // 风格和材质/布局一样「分组覆盖优先于全局」—— 2026-09-22 之前这里
+            // 只传全局 cfg.style，分组级 style 覆盖被静默忽略。
+            let style = groupStyle(cfg, g)
             if g.placement == "right" {
                 let r = try buildGroup(g, style: style)
                 dest = r.folder; okCount = r.ok.count; missing = r.missing
@@ -35,6 +42,7 @@ func cmdApply(_ cfg: JSONObject, _ args: [String]) {
                                              material: groupMaterial(cfg, g),
                                              layout: groupLayout(cfg, g))
                 dest = r.app; okCount = r.ok.count; missing = r.missing
+                anyRebuilt = anyRebuilt || r.rebuilt
             }
             print("  ✓ \(g.name) → \(dest.path)（\(okCount) 个 App）")
             if !missing.isEmpty {
@@ -56,7 +64,7 @@ func cmdApply(_ cfg: JSONObject, _ args: [String]) {
     // 看着像笔误，但这是原版行为：sync 阶段一律处理**所有** enabled 分组，
     // 免得只 apply 一个分组时把别的分组的图标从 Dock 上漏掉。
     do {
-        try dockSync(cfg, only: nil, prune: !keep)
+        try dockSync(cfg, only: nil, prune: !keep, forceRestart: anyRebuilt)
     } catch let e as DgError {
         FileHandle.standardError.write("\(e.message)\n".data(using: .utf8)!)
         exit(1)

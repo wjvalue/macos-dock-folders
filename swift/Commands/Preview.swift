@@ -84,12 +84,11 @@ private func makeCTLine(_ s: String, font: CTFont) -> CTLine {
 
 func cmdPreview(_ cfg: JSONObject, _ args: [String]) {
     let only: Set<String>? = args.isEmpty ? nil : Set(args)
-    let style = cfg.style
     var items: [(label: String, png: URL)] = []
     // 不带参数时预览全部分组（预览是只读操作，不受 enabled 限制）
     for g in cfg.groups where only == nil || only!.contains(g.name) {
         do {
-            let r = try buildGroup(g, iconsOnly: true, style: style)
+            let r = try buildGroup(g, iconsOnly: true, style: groupStyle(cfg, g))
             items.append((g.name, r.mosaic))
             print("  已合成 \(g.name)（\(r.ok.count) 个 App）")
         } catch let e as DgError {

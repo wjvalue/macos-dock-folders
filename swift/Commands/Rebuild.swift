@@ -12,7 +12,6 @@ import Foundation
 /// （exit 137、零输出，看起来像没执行）。要么带沙箱豁免，要么丢后台落日志。
 @discardableResult
 func refreshGroups(_ cfg: JSONObject, names: [String]? = nil, quiet: Bool = false) -> [String] {
-    let style = cfg.style
     var touched: [String] = []
     var skipped: [String] = []
 
@@ -25,6 +24,7 @@ func refreshGroups(_ cfg: JSONObject, names: [String]? = nil, quiet: Bool = fals
         do {
             // seed=false：刷新只改图标，绝不改变成员 ——
             // 否则刚被 del 删掉的成员会被配置里的旧列表重新播种回来
+            let style = groupStyle(cfg, g)   // 分组覆盖优先于全局，与 apply 同一套规则
             if g.placement == "right" {
                 try buildGroup(g, style: style, seed: false)
             } else {

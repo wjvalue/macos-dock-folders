@@ -873,3 +873,29 @@ swiftc 找不到文件直接退出 —— 尽管 dg 二进制本身是全功能�
 
 **别踩的**：写分发文档时别拿老经验写死操作路径 —— Gatekeeper 的放行入口
 苹果说改就改，文档里两个版本都写、并注明「以弹窗实际给的按钮为准」。
+
+## 24. 换了图标 Dock 不刷：缓存钥匙是 icns 的「文件名」，不是内容
+
+**现象**（2026-09-22，macOS 26.6.2 实测）：`dg apply` 换风格后 bundle 里
+`AppIcon.icns` 明明已经是新图标（sips 解出来确认过），CFBundleVersion 跟着内容
+摘要变了、bundle mtime 刷了、`lsregister -f` 跑了、图标缓存
+（`~/Library/Caches/com.apple.iconservices.store`、
+`$(getconf DARWIN_USER_CACHE_DIR)/com.apple.dock.iconcache`）删了、Dock 重启了
+N 次 —— Dock 上**还是旧图标**，要点一下图标才刷新。tile 的 GUID 换成随机值也没用。
+
+**定位实验**：把同一个 bundle 的 icns 复制成 `AppIcon-2.icns`、Info.plist 的
+`CFBundleIconFile` 指过去、重签 → `killall Dock` → 图标**立刻**换新。
+结论：Dock/LaunchServices 对 `CFBundleIconFile` 这条**资源路径**有独立缓存，
+内容变了名字没变就不刷。
+
+**做法**：`CFBundleIconFile` 和 icns 文件名都跟着内容摘要走 ——
+`AppIcon-<digest8>.icns`（digest 与 CFBundleVersion 同源）。图标没变 → 名字不变
+→ 不产生多余刷新；图标变了 → 名字必变 → Dock 必刷。重建时把旧的
+`AppIcon*.icns` 清掉，别在 Resources 里积攒。两套引擎（Python / Swift）同规则。
+
+**别踩的**：
+- 别指望「版本号 + mtime + lsregister」这套老三样 —— 它们在老 macOS 上够用，
+  现在只剩「点一下图标才刷新」的半吊子行为。
+- 无变化跳过重启的判据要用**语义深比较**（bookmark 字节同引擎内实测确定）；
+  但 bundle 重建后 tile 条目本身不变（bundle id / label / bookmark 全一样），
+  必须把「本轮有重建」显式传给 dock_sync 强制重启，否则换风格会被误判成无变化。

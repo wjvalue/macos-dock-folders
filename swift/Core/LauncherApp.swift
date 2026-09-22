@@ -66,12 +66,14 @@ func launcherBinary(force: Bool = false) -> URL {
 /// 构建启动器 App：拼贴图标 + Swift 二进制 + Info.plist。
 ///
 /// 内容运行时从分组文件夹现读，所以往文件夹里加/删 App 只需重建图标，不必重编译。
-/// 返回 (app 路径, 有效清单, 缺失清单)。
+/// 返回 (app 路径, 有效清单, 缺失清单, 本轮是否真的重建了 bundle) —— rebuilt 供
+/// apply 传给 dockSync：图标变了但 Dock plist 条目本身不变，得靠它强制重启 Dock。
 @discardableResult
 func buildLauncherApp(_ g: JSONObject, style: String = DEFAULT_STYLE, force: Bool = false,
                       material: String = DEFAULT_MATERIAL, layout: String = DEFAULT_LAYOUT,
                       seed: Bool? = nil) throws
-    -> (app: URL, ok: [(name: String, target: URL, isAlias: Bool)], missing: [String]) {
+    -> (app: URL, ok: [(name: String, target: URL, isAlias: Bool)], missing: [String],
+        rebuilt: Bool) {
     let name = g.name
     let folder = BASE.appendingPathComponent(name)
     let (_, mosaic, ok, missing) = try buildGroup(g, style: style, seed: seed)
@@ -139,7 +141,19 @@ func buildLauncherApp(_ g: JSONObject, style: String = DEFAULT_STYLE, force: Boo
     for i in core.indices where core[i].0 == "CFBundleShortVersionString" {
         core[i].1 = .string("1.0." + String(digest.prefix(6)))
     }
-    // 补进去的 CFBundleVersion 要落在字母序的位置上，不能直接 append 到末尾
+
+    // ⚠️ icns 文件名也要跟着内容走（2026-09-22 实测，macOS 26.6.2）：
+    // CFBundleVersion 变了 + bundle mtime 刷了 + lsregister -f + killall Dock，
+    // 全做了 Dock **还是**显示旧图标，要点一下图标才刷新 —— Dock/LaunchServices
+    // 对 `CFBundleIconFile` 这个**资源路径**有自己的缓存，内容变了名字没变就不刷。
+    // 实验证据：同一个 bundle 只把 icns 复制成新名字并改 CFBundleIconFile 指过去，
+    // killall Dock 后图标立刻换新。所以图标一变就把 icns 写进带摘要后缀的新文件名，
+    // 并把旧的 AppIcon*.icns 清掉（留着会越积越多）。
+    let iconName = "AppIcon-" + String(digest.prefix(8))
+    for i in core.indices where core[i].0 == "CFBundleIconFile" {
+        core[i].1 = .string(iconName)
+    }
+    // 补进去的键要落在字母序的位置上，不能直接 append 到末尾
     core.sort { pyLess($0.0, $1.0) }
 
     let stamp = CACHE.appendingPathComponent("\(name).bundle-stamp")
@@ -150,7 +164,7 @@ func buildLauncherApp(_ g: JSONObject, style: String = DEFAULT_STYLE, force: Boo
         || stampOld != digest
 
     guard needRebuild else {
-        return (app, ok, missing)
+        return (app, ok, missing, false)
     }
 
     // 覆盖 exe 必须在签名之前：改了 bundle 内容不重签，macOS 会拒绝启动。
@@ -161,7 +175,17 @@ func buildLauncherApp(_ g: JSONObject, style: String = DEFAULT_STYLE, force: Boo
     try? FileManager.default.removeItem(at: exe)
     try? FileManager.default.copyItem(at: binary, to: exe)
     run("/bin/chmod", ["755", exe.path])
-    pngToIcns(mosaic, icon)
+    // 清掉旧的 icns（含老版本的 AppIcon.icns 和上一轮的 AppIcon-*.icns）
+    if let entries = try? FileManager.default.contentsOfDirectory(
+        at: icon.deletingLastPathComponent(), includingPropertiesForKeys: nil) {
+        for e in entries where e.lastPathComponent.hasPrefix("AppIcon")
+            && e.pathExtension == "icns"
+            && e.lastPathComponent != "\(iconName).icns" {
+            try? FileManager.default.removeItem(at: e)
+        }
+    }
+    let iconFile = icon.deletingLastPathComponent().appendingPathComponent("\(iconName).icns")
+    pngToIcns(mosaic, iconFile)
     try? PlistValue.dict(core).xmlData().write(to: info, options: .atomic)
 
     let codesign = which("codesign") ?? "/usr/bin/codesign"
@@ -175,7 +199,7 @@ func buildLauncherApp(_ g: JSONObject, style: String = DEFAULT_STYLE, force: Boo
     // Dock 会一直显示旧图标（实测踩过）。
     let now = Date()
     for d in [app, app.appendingPathComponent("Contents"),
-              app.appendingPathComponent("Contents/Resources"), icon] {
+              app.appendingPathComponent("Contents/Resources"), iconFile] {
         try? FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: d.path)
     }
 
@@ -186,5 +210,5 @@ func buildLauncherApp(_ g: JSONObject, style: String = DEFAULT_STYLE, force: Boo
     if stripQuarantine(app) {
         print("  已清除「\(app.lastPathComponent)」继承来的隔离属性")
     }
-    return (app, ok, missing)
+    return (app, ok, missing, true)
 }

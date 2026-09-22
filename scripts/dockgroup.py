@@ -85,7 +85,7 @@ import urllib.parse
 from datetime import datetime
 from pathlib import Path
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 
 try:
     from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -884,7 +884,9 @@ def build_launcher_app(g, style=DEFAULT_STYLE, force=False,
                        material=DEFAULT_MATERIAL, layout=DEFAULT_LAYOUT, seed=None):
     """构建启动器 App：拼贴图标 + Swift 二进制 + Info.plist。
 
-    返回 (app 路径, 有效 App 列表, 缺失列表)。内容运行时从分组文件夹现读，
+    返回 (app 路径, 有效 App 列表, 缺失列表, 本轮是否真的重建了 bundle)。
+    rebuilt 供 cmd_apply 传给 dock_sync：图标变了但 Dock plist 条目本身不变，
+    得靠它强制重启 Dock。内容运行时从分组文件夹现读，
     所以往文件夹里加/删 App 只需 rebuild 图标，不必重编译。
     """
     name = g["name"]
@@ -951,12 +953,27 @@ def build_launcher_app(g, style=DEFAULT_STYLE, force=False,
     plist["CFBundleVersion"] = digest[:8]
     plist["CFBundleShortVersionString"] = "1.0." + digest[:6]
 
+    # ⚠️ icns 文件名也要跟着内容走（2026-09-22 实测，macOS 26.6.2）：
+    # CFBundleVersion 变了 + bundle mtime 刷了 + lsregister -f + killall Dock，
+    # 全做了 Dock **还是**显示旧图标，要点一下图标才刷新 —— Dock/LaunchServices
+    # 对 `CFBundleIconFile` 这个**资源路径**有自己的缓存，内容变了名字没变就不刷。
+    # 实验证据：同一个 bundle 只把 icns 复制成新名字并改 CFBundleIconFile 指过去，
+    # killall Dock 后图标立刻换新。与 Swift 版 buildLauncherApp 同一套规则。
+    icon_name = "AppIcon-" + digest[:8]
+    plist["CFBundleIconFile"] = icon_name
+
     stamp = CACHE / f"{name}.bundle-stamp"
-    if (force or not exe.exists() or not stamp.exists()
-            or stamp.read_text().strip() != digest):
+    rebuilt = force or not exe.exists() or not stamp.exists() \
+        or stamp.read_text().strip() != digest
+    if rebuilt:
         # 覆盖 exe 必须在签名之前：改了 bundle 内容不重签，macOS 会拒绝启动。
         shutil.copyfile(binary, exe)
         os.chmod(exe, 0o755)
+        # 清掉旧的 icns（含老版本的 AppIcon.icns 和上一轮的 AppIcon-*.icns）
+        for old in icon.parent.glob("AppIcon*.icns"):
+            if old.name != f"{icon_name}.icns":
+                old.unlink(missing_ok=True)
+        icon = icon.parent / f"{icon_name}.icns"
         png_to_icns(mosaic, icon)
         with info.open("wb") as f:
             plistlib.dump(plist, f)
@@ -977,7 +994,7 @@ def build_launcher_app(g, style=DEFAULT_STYLE, force=False,
     if strip_quarantine(app):
         print(f"  已清除「{app.name}」继承来的隔离属性"
               "（否则首次打开会被 Gatekeeper 拦）")
-    return app, ok, missing
+    return app, ok, missing, rebuilt
 
 
 MANAGER_SRC = "manager/main.swift"
@@ -1231,7 +1248,7 @@ def dock_read(refresh: bool = False) -> dict:
     return _dock_cache
 
 
-def dock_write(pl: dict):
+def dock_write(pl: dict, force_restart: bool = False):
     global _dock_cache
     # DOCKGROUP_SKIP_DOCK=1：整体跳过（不备份、不导入、不 killall）——
     # CI / 脚本化场景「只生成产物、绝不打扰 Dock」的总开关。与
@@ -1241,6 +1258,18 @@ def dock_write(pl: dict):
         print("已跳过 Dock 写入（DOCKGROUP_SKIP_DOCK=1）")
         return
     data = plistlib.dumps(pl)
+    # 无变化检测（2026-09-22 加，与 Swift 版 dockWrite 同规则）：
+    # 配置一个字没变时 killall Dock 纯属白闪 —— 全屏闪一下就是 Dock 在重启。
+    # 深比较过就整段跳过。Python 的 bookmark 走 JXA，若某天系统让它变得
+    # 不确定，最坏也只是退回「每次都重启」的旧行为，不会写坏配置。
+    #
+    # ⚠️ force_restart 例外：bundle 重建后图标变了，但 Dock plist 条目本身
+    # （bundle id / label / bookmark）不变，深比较会误判成「没变化」——
+    # 这时必须照写照重启，否则 Dock 上永远是旧图标。
+    if not force_restart and dock_read(refresh=True) == pl:
+        print("Dock 配置无变化，跳过重启")
+        _dock_cache = pl
+        return
     if dock_plist_override() is not None:
         dock_plist_override().write_bytes(data)
         _dock_cache = pl
@@ -1301,11 +1330,15 @@ def _insert_after(tiles, tile, anchor_path):
     tiles.append(tile)
 
 
-def dock_sync(cfg, only=None, prune=True):
+def dock_sync(cfg, only=None, prune=True, force_restart=False):
     """把分组文件夹写进 Dock。
 
-    位置策略：文件夹落在「被折叠的第一个 App 原来所在的位置」，不需手工配锚点。
-    （macOS 不允许拖文件夹进左侧 App 区，但手写 plist 是能被 Dock 接受的，实测通过。）
+    位置策略（2026-09-22 重写，与 Swift 版 dockSync 同规则）：
+      · 分组图标**已经在 Dock 上**的 → 原地替换，保住用户手动拖出来的顺序。
+        （旧实现是「删掉再按第一个成员 App 的位置重插」，手动挪过的位置每次
+        apply 都会被弹回原位 —— 老大报的 bug。）
+      · 新分组仍落在「被折叠的第一个 App 原来所在的位置」，不需手工配锚点。
+        （macOS 不允许拖文件夹进左侧 App 区，但手写 plist 是能被 Dock 接受的，实测通过。）
 
     placement="left"  → 写进 persistent-apps（左侧 App 区）
     placement="right" → 写进 persistent-others（分隔线右侧）
@@ -1315,6 +1348,7 @@ def dock_sync(cfg, only=None, prune=True):
     pl = dock_read()
     managed = {g["name"] for g in cfg["groups"]}
     original = pl.get("persistent-apps", [])
+    original_others = pl.get("persistent-others", [])
 
     # 每组引用到的真实 App 路径
     paths_of = {}
@@ -1330,9 +1364,22 @@ def dock_sync(cfg, only=None, prune=True):
         p = tile_path(tile)
         return bool(p) and (p in pset or os.path.realpath(p) in pset)
 
-    # 自动落位：每组第一个 App 在原列表中的下标
+    # 待写入的分组按 placement 分桶；「已在 Dock 上」的不走自动落位
+    pending_left = {g["name"]: g for g in targets
+                    if g.get("placement", "left") != "right"}
+    pending_right = {g["name"]: g for g in targets
+                     if g.get("placement", "left") == "right"}
+
+    def currently_docked(g):
+        labels = [tile_label(t) for t in original] + \
+                 [tile_label(t) for t in original_others]
+        return g["name"] in labels
+
+    # 自动落位：只给**还不在 Dock 上**的新分组算；锚 = 每组第一个 App 在原列表中的下标
     first_pos, fallback = {}, []
     for g in targets:
+        if currently_docked(g):
+            continue
         idx = next((i for i, t in enumerate(original)
                     if matches(t, paths_of[g["name"]])), None)
         if idx is None:
@@ -1345,24 +1392,61 @@ def dock_sync(cfg, only=None, prune=True):
             return False
         return not (prune and matches(t, all_grouped))
 
+    placed = set()          # 已经写进结果的分组名
+    replaced_in_place = set()  # 其中「原地替换」的那部分 —— after 不再动它们
+
     left = []
     for i, t in enumerate(original):
+        # 锚在这个下标的新分组：插在成员 App 前面（与旧版一致）
         for g in first_pos.get(i, []):
             if g.get("placement", "left") != "right":
                 left.append(tile_for(g))
+                placed.add(g["name"])
+        label = tile_label(t)
+        if label in pending_left:
+            left.append(tile_for(pending_left[label]))   # 原地替换：保住现有位置
+            placed.add(label)
+            replaced_in_place.add(label)
+            continue
+        if label in managed:
+            continue                                     # 分组被禁用/删除 → 照旧摘掉
         if keep_left(t):
             left.append(t)
 
-    right = [t for t in pl.get("persistent-others", [])
-             if tile_label(t) not in managed
-             and not (tile_path(t) or "").startswith(str(BASE))]
+    right = []
+    for t in original_others:
+        label = tile_label(t)
+        if label in pending_right:
+            right.append(tile_for(pending_right[label]))  # 原地替换
+            placed.add(label)
+            replaced_in_place.add(label)
+            continue
+        if label in managed:
+            continue
+        if (tile_path(t) or "").startswith(str(BASE)):
+            continue
+        right.append(t)
 
+    # 没锚点的兜底：新分组按 placement 追加到对应区末尾（与旧版一致）
     for g in fallback:
         side = right if g.get("placement", "left") == "right" else left
         side.append(tile_for(g))
+        placed.add(g["name"])
 
-    # 显式 after 覆盖
+    # placement 左右切换过、或其他边角情况：凡是 targets 里还没落位的，补到末尾
     for g in targets:
+        if g["name"] not in placed:
+            side = right if g.get("placement", "left") == "right" else left
+            side.append(tile_for(g))
+            placed.add(g["name"])
+
+    # 显式 after 覆盖 —— **只对首次落位的分组生效**。
+    # 旧版每次 apply 都把所有配了 after 的分组拽回锚点，是「手动排序被重置」的
+    # 另一半元凶（每个分组默认都带 after）。现在：分组已经在 Dock 上的，用户拖
+    # 到哪就是哪；想重新按 after 落位，先 remove 再 apply。
+    for g in targets:
+        if g["name"] in replaced_in_place:
+            continue
         if not g.get("after"):
             continue
         left[:] = [t for t in left if tile_label(t) != g["name"]]
@@ -1370,7 +1454,7 @@ def dock_sync(cfg, only=None, prune=True):
 
     pl["persistent-apps"] = left
     pl["persistent-others"] = right
-    dock_write(pl)
+    dock_write(pl, force_restart=force_restart)
     return [g["name"] for g in targets]
 
 
@@ -1980,19 +2064,20 @@ def cmd_apply(cfg, args):
     targets = _targets(cfg, only)
     if not targets:
         sys.exit("没有匹配的分组")
-    style = cfg.get("style", DEFAULT_STYLE)
     before = len(dock_read().get("persistent-apps", []))
+    any_rebuilt = False
     for g in targets:
         if g.get("placement", "left") == "right":
-            dest, _, ok, missing = build_group(g, style=style)
+            dest, _, ok, missing = build_group(g, style=group_style(cfg, g))
         else:
-            dest, ok, missing = build_launcher_app(g, style=style,
-                                                   material=group_material(cfg, g),
-                                                   layout=group_layout(cfg, g))
+            dest, ok, missing, rebuilt = build_launcher_app(g, style=group_style(cfg, g),
+                                                            material=group_material(cfg, g),
+                                                            layout=group_layout(cfg, g))
+            any_rebuilt = any_rebuilt or rebuilt
         print(f"  ✓ {g['name']} → {dest}（{len(ok)} 个 App）")
         if missing:
             print(f"       ⚠ 跳过 {len(missing)} 个不存在的 App")
-    dock_sync(cfg, only=None, prune=not keep)
+    dock_sync(cfg, only=None, prune=not keep, force_restart=any_rebuilt)
     after = len(dock_read().get("persistent-apps", []))
     print(f"\nDock 左侧 App 图标：{before} → {after}")
     if kill_launchers():
@@ -2074,6 +2159,16 @@ def cmd_style(cfg, args):
     print(f"已更新：{', '.join(touched) if touched else '无'}（Dock 已重启）")
     if not touched:
         print("提示：这些分组还没有生成图标，跑 `dg apply` 才会写进 Dock")
+
+
+def group_style(cfg, g):
+    """取某个分组该用的拼贴图标风格。
+
+    和 group_material() / group_layout() 同一套「分组覆盖全局」的规则。
+    2026-09-22 之前 apply / rebuild / preview 只传全局 cfg["style"]，分组里写
+    style 是被静默忽略的 —— GUI（管理窗口）后来加了按分组改外观，引擎这边必须认。
+    """
+    return g.get("style") or cfg.get("style", DEFAULT_STYLE)
 
 
 def group_material(cfg, g):

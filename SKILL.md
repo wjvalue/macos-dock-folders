@@ -62,11 +62,20 @@ dg new  AI "App1" "App2"
 dg add  AI "App3"       # 往已有分组加 App（自动刷新图标 + 重启 Dock）
 dg del  AI "App3"       # 从分组删 App（只删别名；真实 App 会拒绝）
 dg preview [组名]       # 只合成图标预览，不动 Dock —— 改前必跑
-dg apply   [组名]       # 生成并写入 Dock
+dg apply   [组名]       # 生成并写入 Dock（分组已在 Dock 上时保住手动拖的顺序）
 dg rebuild              # 全部重新生成图标并重启 Dock
 dg gui                  # 图形界面（分组管理窗口）
 dg list / style / layout / open / test / logs / remove / clean / watch-install / restore
 ```
+
+> **apply 的两条位置规则（2026-09-22 重写 dock_sync）：**
+> ① 分组图标已经在 Dock 上 → **原地替换**，用户手动拖出来的顺序不会再被弹回去
+>    （旧实现每次都按「第一个成员 App 的位置」重插，手动排序每次 apply 都丢）；
+> ② 配置里的 `after` 锚点**只在分组首次落位时生效** —— 旧版每次 apply 都把分组
+>    拽回锚点，是位置被重置的另一半元凶。想重新按 after 落位：`dg remove <组名>`
+>    再 `dg apply`。
+> 另外配置没变时 apply 会跳过 Dock 重启（不闪屏）；bundle 重建（换风格/换成员）
+> 时照常重启 —— 图标要刷新只能靠重启 Dock。
 
 > **交互模式（用户不想敲名字时）**：`dg add` / `dg new` **不带参数**直接回车，
 > 就进入引导 —— 列分组、列全部已安装 App，输关键词过滤、敲数字多选、回车确认。
@@ -96,6 +105,11 @@ dg list / style / layout / open / test / logs / remove / clean / watch-install /
 >    可以验证往返，见下）；
 > ③ 它是普通 App（有 Dock 图标，不设 `LSUIElement`），和每分组一个的分组启动器不是一回事，
 >    产物在 `~/Dock Groups/.apps/DockGroup.app`。
+>
+> **外观三项的作用范围（2026-09-22 加）**：右栏顶部有个「当前分组 / 全局默认」
+> 分段控件 —— 默认只改**左边选中的分组**（写进该分组的覆盖字段，引擎 apply /
+> rebuild / preview 都认 `style` 覆盖）；要改全局就切到「全局默认」。
+> 以前不管左边选了啥都是全局生效，老大报过不合理。
 
 > ⚠️ **改了布局或材质、点开面板却没变化？先怀疑「旧的面板进程还活着」。**
 > 启动器收起后要**常驻一小段时间**才退出（立刻退会让 Dock 报「应用程序已不能再打开」，

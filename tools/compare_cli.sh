@@ -26,6 +26,12 @@ PX=/tmp/cmpcli-px
 ICONS="$HOME/Dock Groups/.cache/app-icons"
 PIXEL_MAX=1.0
 
+# 锚死 Swift 引擎的仓库根。不设的话 `~/.local/bin/.dg-repo-root` 标记文件
+# （install.command 装预编译 .app 时写入）会抢在编译期路径前面，把 SCRIPT_DIR
+# 指到 ~/Library/Application Support/DockGroup —— 「源码在哪」类提示就跟
+# Python 侧（用 __file__，永远是仓库）对不上（2026-09-22 实测 6 项假失败）。
+export DOCKGROUP_REPO="$REPO"
+
 if [ ! -x "$SW" ]; then
     echo "还没编译，先跑：swift/build.sh" >&2
     exit 1
@@ -420,21 +426,25 @@ build_launcher_app(g, style=cfg.get('style'), material=group_material(cfg, g),
     cp -R "$T/.apps/测试组.app" "$SWAPP/" 2>/dev/null
     cp "$T/.cache/测试组.png" "$SWAPP/mosaic.png" 2>/dev/null
 
-    # ① Info.plist：抹掉两个版本键后逐字节比
+    # ① Info.plist：抹掉版本键和 icns 文件名后逐字节比。
+    # CFBundleVersion / CFBundleIconFile 都按内容摘要算（sha256(plist + 图标 +
+    # 签名前的二进制)），而两边的图标 PNG 有亚像素差异、swiftc 产物还带 LC_UUID
+    # 非确定性 —— 后缀注定不同。结构对了才是重点。（2026-09-22 加 CFBundleIconFile）
     local norm="$PY -c \"
 import re, sys
 t = open(sys.argv[1], encoding='utf-8').read()
 t = re.sub(r'<key>CFBundleVersion</key>\\\\s*<string>[^<]*</string>', '<key>CFBundleVersion</key><string>X</string>', t)
 t = re.sub(r'<key>CFBundleShortVersionString</key>\\\\s*<string>[^<]*</string>', '<key>CFBundleShortVersionString</key><string>X</string>', t)
+t = re.sub(r'<key>CFBundleIconFile</key>\\\\s*<string>AppIcon-[^<]*</string>', '<key>CFBundleIconFile</key><string>AppIcon-X</string>', t)
 sys.stdout.write(t)
 \""
     eval "$norm \"$PYAPP/测试组.app/Contents/Info.plist\"" > "$A" 2>&1
     eval "$norm \"$SWAPP/测试组.app/Contents/Info.plist\"" > "$B" 2>&1
     report ".app：Info.plist（版本键归一化）" 0 0
 
-    # ② bundle 结构：有哪些文件
-    (cd "$PYAPP/测试组.app" && find . -type f | sort) > "$A" 2>&1
-    (cd "$SWAPP/测试组.app" && find . -type f | sort) > "$B" 2>&1
+    # ② bundle 结构：有哪些文件（icns 文件名带摘要后缀，归一化掉再比）
+    (cd "$PYAPP/测试组.app" && find . -type f | sort | sed 's/AppIcon-[a-f0-9]*\.icns/AppIcon-X.icns/') > "$A" 2>&1
+    (cd "$SWAPP/测试组.app" && find . -type f | sort | sed 's/AppIcon-[a-f0-9]*\.icns/AppIcon-X.icns/') > "$B" 2>&1
     report ".app：bundle 结构" 0 0
 
     # ③ 合成图标：比像素
