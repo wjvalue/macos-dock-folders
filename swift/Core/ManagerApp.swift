@@ -12,14 +12,23 @@ import Foundation
 
 let MANAGER_SRC = "manager/main.swift"
 
+/// 管理窗口源码查找：仓库优先，缓存兜底（与 launcherSourceURL 同款逻辑，
+/// 见那里的注释 —— 仓库被删/挪后 rebuild 不断）。
+func managerSourceURL() -> URL {
+    let repoSrc = SCRIPT_DIR.appendingPathComponent(MANAGER_SRC)
+    if FileManager.default.fileExists(atPath: repoSrc.path) { return repoSrc }
+    let cachedSrc = CACHE.appendingPathComponent(".manager.main.swift")
+    if FileManager.default.fileExists(atPath: cachedSrc.path) { return cachedSrc }
+    FileHandle.standardError.write(
+        "找不到管理窗口源码：\(repoSrc.path)\n（仓库被移动或删除了？重跑一次 tools/install.command 可修复）\n"
+        .data(using: .utf8)!)
+    exit(1)
+}
+
 /// 编译管理窗口二进制。判据和 launcherBinary 一致：按源码内容摘要，
 /// 不看 mtime —— codesign 会把签名写进可执行文件，mtime 判据必然失效。
 func managerBinary(force: Bool = false) -> URL {
-    let src = SCRIPT_DIR.appendingPathComponent(MANAGER_SRC)
-    guard FileManager.default.fileExists(atPath: src.path) else {
-        FileHandle.standardError.write("找不到管理窗口源码：\(src.path)\n".data(using: .utf8)!)
-        exit(1)
-    }
+    let src = managerSourceURL()
     let cached = CACHE.appendingPathComponent(".manager.bin")
     let stamp = CACHE.appendingPathComponent(".manager.src-stamp")
     let digest = sha256Hex((try? Data(contentsOf: src)) ?? Data())

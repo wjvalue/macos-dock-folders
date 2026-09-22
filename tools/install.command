@@ -54,9 +54,13 @@ if [ -x "$PREBUILT" ]; then
     echo "③ 预置启动器 / 管理窗口二进制"
     # 放进缓存 + 写源码摘要戳 → apply 时命中缓存，现场不用 swiftc。
     # 戳必须和 ships 的源码一致 —— 发布包就是从同一棵源码树构建的。
+    # 源码副本也进缓存：用户之后删掉/挪走安装目录，rebuild 仍能命中缓存
+    # 摘要继续跑，不必依赖仓库在场（引擎侧会按 仓库 → 缓存 的顺序找源码）。
     mkdir -p "$CACHE"
     cp "$ROOT/prebuilt/DockGroupLauncher.bin" "$CACHE/.launcher.bin"
     cp "$ROOT/prebuilt/DockGroupManager.bin" "$CACHE/.manager.bin"
+    cp "$ROOT/scripts/launcher/main.swift" "$CACHE/.launcher.main.swift"
+    cp "$ROOT/scripts/manager/main.swift" "$CACHE/.manager.main.swift"
     shasum -a 256 "$ROOT/scripts/launcher/main.swift" | awk '{print $1}' \
         > "$CACHE/.launcher.src-stamp"
     shasum -a 256 "$ROOT/scripts/manager/main.swift" | awk '{print $1}' \

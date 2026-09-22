@@ -27,7 +27,17 @@ var dockPlistOverride: URL? {
 // ─────────────────────────────────────────────── 写 Dock
 
 /// 写 Dock 配置：备份 → 导入 → 重启 Dock / Finder。
+///
+/// `DOCKGROUP_SKIP_DOCK=1` 时整体跳过（不备份、不导入、不 killall、不写替身）：
+/// 给 CI / 脚本化场景一个「只生成产物、绝不打扰 Dock」的总开关。
+/// 与 DOCKGROUP_DOCK_PLIST 的区别：那个是**重定向**到替身文件，这个是**什么都不做**。
+/// Python 版 dock_write 有同款开关，两边行为必须一致。
 func dockWrite(_ pl: [String: Any]) throws {
+    if ProcessInfo.processInfo.environment["DOCKGROUP_SKIP_DOCK"] == "1" {
+        print("已跳过 Dock 写入（DOCKGROUP_SKIP_DOCK=1）")
+        return
+    }
+
     let data = try plistData(pl)
 
     if let override = dockPlistOverride {

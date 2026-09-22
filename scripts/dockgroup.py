@@ -857,9 +857,15 @@ def launcher_binary(force=False) -> Path:
     Info.plist 里，二进制本身与分组无关 —— 一份编译产物给所有分组用，
     rebuild 少编译 N-1 次。
     """
+    # 源码查找：仓库优先，缓存兜底（预编译安装时 install.command 会把副本
+    # 放进缓存，内容与摘要戳同源 —— 仓库被删/挪后摘要照样命中缓存）。
     src = SCRIPT_DIR / "launcher/main.swift"
     if not src.exists():
-        raise SystemExit(f"找不到启动器源码：{src}")
+        src = CACHE / ".launcher.main.swift"
+    if not src.exists():
+        raise SystemExit(
+            f"找不到启动器源码：{SCRIPT_DIR / 'launcher/main.swift'}\n"
+            "（仓库被移动或删除了？重跑一次 tools/install.command 可修复）")
     cached = CACHE / ".launcher.bin"
     stamp = CACHE / ".launcher.src-stamp"
     digest = hashlib.sha256(src.read_bytes()).hexdigest()
@@ -981,9 +987,14 @@ def manager_binary(force=False) -> Path:
     """编译管理窗口二进制。判据和 launcher_binary 一致：按源码内容摘要，
     不看 mtime —— codesign 会把签名写进可执行文件，mtime 判据必然失效。
     """
+    # 缓存兜底同 launcher_binary，见那里的注释。
     src = SCRIPT_DIR / MANAGER_SRC
     if not src.exists():
-        raise SystemExit(f"找不到管理窗口源码：{src}")
+        src = CACHE / ".manager.main.swift"
+    if not src.exists():
+        raise SystemExit(
+            f"找不到管理窗口源码：{SCRIPT_DIR / MANAGER_SRC}\n"
+            "（仓库被移动或删除了？重跑一次 tools/install.command 可修复）")
     cached = CACHE / ".manager.bin"
     stamp = CACHE / ".manager.src-stamp"
     digest = hashlib.sha256(src.read_bytes()).hexdigest()
@@ -1222,6 +1233,13 @@ def dock_read(refresh: bool = False) -> dict:
 
 def dock_write(pl: dict):
     global _dock_cache
+    # DOCKGROUP_SKIP_DOCK=1：整体跳过（不备份、不导入、不 killall）——
+    # CI / 脚本化场景「只生成产物、绝不打扰 Dock」的总开关。与
+    # DOCKGROUP_DOCK_PLIST 的区别：那个是重定向到替身文件，这个是什么都不做。
+    # Swift 版 dockWrite 有同款开关，两边行为必须一致。
+    if os.environ.get("DOCKGROUP_SKIP_DOCK") == "1":
+        print("已跳过 Dock 写入（DOCKGROUP_SKIP_DOCK=1）")
+        return
     data = plistlib.dumps(pl)
     if dock_plist_override() is not None:
         dock_plist_override().write_bytes(data)
@@ -2335,10 +2353,22 @@ def cmd_watch_install(cfg, args):
     override = dock_plist_override()
     agent = (override.parent / "watch-test.plist") if override is not None else AGENT_PLIST
     agent.parent.mkdir(parents=True, exist_ok=True)
+    # 引擎入口复用 engine_command()：dg 二进制能直接 exec；万一退回仓库里的
+    # dockgroup.py（.py 不能直接 exec 出可靠解释器），保留 /usr/bin/python3 前缀。
+    #
+    # ⚠️ 不能写死 python3 + 本脚本：预编译安装（install.command 路径 A）根本
+    # 不装 Pillow，而本文件顶部 `from PIL import` 缺包直接 sys.exit ——
+    # watch agent 每次被文件夹变动触发都静默崩，自动刷新从未生效。
+    # （2026-09-22 对比外部 PR 时发现；Swift 侧 Watch.swift 有同款修复。）
+    # DOCKGROUP_HOME 也必须显式带进 agent：launchd 环境里没有用户的 shell
+    # 配置，BASE 若是自定义位置，agent 里的 rebuild 会找错配置目录。
+    ec = engine_command()
+    prog_args = (["/usr/bin/python3", ec] if ec.endswith(".py") else [ec]) \
+        + ["rebuild", "--quiet"]
     agent.write_bytes(plistlib.dumps({
+        "EnvironmentVariables": {"DOCKGROUP_HOME": str(BASE)},
         "Label": AGENT_LABEL,
-        "ProgramArguments": ["/usr/bin/python3", str(SCRIPT_DIR / "dockgroup.py"),
-                             "rebuild", "--quiet"],
+        "ProgramArguments": prog_args,
         "WatchPaths": [str(BASE / g["name"]) for g in cfg["groups"]],
         "RunAtLoad": False,
         "ThrottleInterval": 5,

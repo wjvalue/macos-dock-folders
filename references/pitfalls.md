@@ -805,3 +805,34 @@ def _mdfind_app(needle):
 
 **配套**：面板位置基于点击瞬间的鼠标坐标，所以只有从 Dock 点击才精准；
 从终端 `dg test` 启动会弹在鼠标当前位置。
+
+## 20. watch agent 写死 Python 路径 = 预编译用户静默失效
+
+**现象**：`watch-install` 装出来的 LaunchAgent 指向 `/usr/bin/python3 + 仓库
+dockgroup.py`。预编译安装（install.command 路径 A）根本不装 Pillow，而
+dockgroup.py 顶部 `from PIL import` 缺包直接 `sys.exit` —— agent 每次被
+文件夹变动触发都静默崩溃，「自动刷新图标」从未生效，且没有任何报错提示。
+
+**做法**：agent 的 `ProgramArguments` 改用 `engine_command()`（优先
+`~/.local/bin/dg` 二进制，能直接 exec）；并显式带上
+`EnvironmentVariables: {DOCKGROUP_HOME: …}` —— launchd 环境里没有用户的
+shell 配置，BASE 是自定义位置时 agent 会找错配置目录。
+（2026-09-22 修，源于与外部 PR 的对比评审。）
+
+**别踩的**：凡是要**脱离当前进程环境**跑的东西（LaunchAgent、GUI 回调、
+登录项），路径和环境变量都必须写绝对值、显式注入 —— 不能假设有 shell 上下文。
+
+## 21. 引擎源码别只放仓库里一份
+
+**现象**：rebuild 要按 `scripts/launcher/main.swift` 的内容摘要决定是否
+重新编译。预编译用户把安装目录一删/一挪，源码读不到 → 摘要必失配 →
+swiftc 找不到文件直接退出 —— 尽管 dg 二进制本身是全功能的，rebuild 还是断。
+
+**做法**：install.command 预编译路径把两份 main.swift 副本放进
+`~/Dock Groups/.cache/`（`.launcher.main.swift` / `.manager.main.swift`，
+与摘要戳同源）；引擎侧按「仓库 → 缓存」的顺序找源码。仓库不在场时摘要
+照样命中缓存，rebuild 不需要仓库存在。
+
+**别踩的**：缓存副本和 `.bin`、`.src-stamp` 必须来自同一棵源码树 ——
+发布包由 `tools/build-release.sh` 从 HEAD 构建，天然一致；本地手工换过
+其中一个就要三个一起换。

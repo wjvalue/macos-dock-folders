@@ -8,7 +8,7 @@
 // 不碰 —— 输出走「没有 launchd 权限」分支（沙箱里本来也只有这条能走）。
 //
 // plist 的键顺序必须是**字母序**：plistlib.dumps 默认 sort_keys=True，
-// PlistValue 的渲染器不替你排序。
+// PlistValue 的渲染器不替你排序。嵌套字典（EnvironmentVariables）同理。
 
 import Foundation
 
@@ -23,14 +23,25 @@ private func agentPlistURL() -> URL {
 }
 
 private func watchPayload(_ cfg: JSONObject) -> PlistValue {
-    .dict([
-        ("Label", .string(WATCH_LABEL)),
-        ("ProgramArguments", .array([
-            .string("/usr/bin/python3"),
-            .string(SCRIPT_DIR.appendingPathComponent("dockgroup.py").path),
-            .string("rebuild"),
-            .string("--quiet"),
+    // 引擎入口复用 engineCommand()：dg 二进制能直接 exec；万一退回仓库里的
+    // dockgroup.py（.py 不能直接 exec 出可靠解释器），保留 /usr/bin/python3 前缀。
+    //
+    // ⚠️ 不能写死 python3 + 仓库脚本：预编译安装（install.command 路径 A）根本
+    // 不装 Pillow，dockgroup.py 顶部 `from PIL import` 缺包直接 sys.exit ——
+    // watch agent 每次被文件夹变动触发都静默崩，自动刷新从未生效。
+    // （2026-09-22 对比外部 PR 时发现；Python 侧 cmd_watch_install 有同款修复。）
+    let ec = engineCommand()
+    let progArgs: [PlistValue] = ec.hasSuffix(".py")
+        ? [.string("/usr/bin/python3"), .string(ec), .string("rebuild"), .string("--quiet")]
+        : [.string(ec), .string("rebuild"), .string("--quiet")]
+    return .dict([
+        // DOCKGROUP_HOME 必须显式带进 agent：launchd 环境里没有用户的 shell
+        // 配置，BASE 若是自定义位置，agent 里的 rebuild 会找错配置目录。
+        ("EnvironmentVariables", .dict([
+            ("DOCKGROUP_HOME", .string(BASE.path)),
         ])),
+        ("Label", .string(WATCH_LABEL)),
+        ("ProgramArguments", .array(progArgs)),
         ("RunAtLoad", .bool(false)),
         ("ThrottleInterval", .integer(5)),
         ("WatchPaths", .array(cfg.groups.map { .string(BASE.appendingPathComponent($0.name).path) })),

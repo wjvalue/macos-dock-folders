@@ -10,6 +10,22 @@ import Foundation
 let LSREGISTER = "/System/Library/Frameworks/CoreServices.framework"
     + "/Frameworks/LaunchServices.framework/Support/lsregister"
 
+/// 启动器源码查找：仓库优先，缓存兜底。
+///
+/// 兜底是给「仓库被删/挪」的场景：install.command 预编译安装时会把 main.swift
+/// 副本放进缓存（内容与源码摘要戳同源），仓库不在场时摘要照样命中缓存，
+/// rebuild 不需要仓库存在。两边都找不到才报错。
+func launcherSourceURL() -> URL {
+    let repoSrc = SCRIPT_DIR.appendingPathComponent("launcher/main.swift")
+    if FileManager.default.fileExists(atPath: repoSrc.path) { return repoSrc }
+    let cachedSrc = CACHE.appendingPathComponent(".launcher.main.swift")
+    if FileManager.default.fileExists(atPath: cachedSrc.path) { return cachedSrc }
+    FileHandle.standardError.write(
+        "找不到启动器源码：\(repoSrc.path)\n（仓库被移动或删除了？重跑一次 tools/install.command 可修复）\n"
+        .data(using: .utf8)!)
+    exit(1)
+}
+
 /// 编译启动器二进制 —— **所有分组共用同一份**。
 ///
 /// 判据用 main.swift 的**内容摘要**，不能用 mtime：`codesign --force --sign -`
@@ -22,11 +38,7 @@ let LSREGISTER = "/System/Library/Frameworks/CoreServices.framework"
 /// 启动器需要的全部信息（分组名、文件夹、材质、脚本路径）都写在 Info.plist 里，
 /// 二进制与分组无关 —— 一份编译产物给所有分组用，rebuild 少编译 N-1 次。
 func launcherBinary(force: Bool = false) -> URL {
-    let src = SCRIPT_DIR.appendingPathComponent("launcher/main.swift")
-    guard FileManager.default.fileExists(atPath: src.path) else {
-        FileHandle.standardError.write("找不到启动器源码：\(src.path)\n".data(using: .utf8)!)
-        exit(1)
-    }
+    let src = launcherSourceURL()
     let cached = CACHE.appendingPathComponent(".launcher.bin")
     let stamp = CACHE.appendingPathComponent(".launcher.src-stamp")
     let digest = sha256Hex((try? Data(contentsOf: src)) ?? Data())
