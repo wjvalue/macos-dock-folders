@@ -8,8 +8,9 @@
 没有常驻守护进程。
 
 ![dockgroup](docs/hero.png)
+*图：Dock 里的分组图标（左）与点开后的弹出面板（右） · 图源 [`docs/hero.png`](docs/hero.png)*
 
-[这是什么](#这是什么) · [安装](#安装) · [快速开始](#快速开始) · [用法](#用法) · [图形界面](#图形界面) · [外观](#外观) · [出问题时](#出问题时)
+[这是什么](#这是什么) · [安装](#安装) · [快速开始](#快速开始) · [用法](#用法) · [图形界面](#图形界面) · [外观](#外观) · [配置](#配置-groupsjson) · [实现与取舍](#实现与取舍) · [出问题时](#出问题时) · [AI Agent Skill](#作为-ai-agent-skill-使用) · [开发](#开发) · [License](#license)
 
 </div>
 
@@ -255,6 +256,7 @@ Dock 上的分组图标上 —— 松手时分组图标会高亮，自动建别�
 不想敲命令（或者只想看看换成别的样式长什么样），用图形界面 —— `dg gui` 开管理窗口：
 
 ![管理窗口](docs/manager.png)
+*图：DockGroup 设置窗口（真机截图） · 图源 [`docs/manager.png`](docs/manager.png)*
 
 ```bash
 dg gui              # 预编译包秒开（二进制已预置）；源码安装第一次现场 swiftc（约十秒），之后走缓存
@@ -292,6 +294,7 @@ dg gui --rebuild    # 改过窗口源码后强制重编译
 混在 Dock 里看不出是生成的。
 
 ![Dock 里的分组图标](docs/dock-tile.png)
+*图：真实 Dock 条中的分组图标 + 2×2 拼贴来源放大图 · 图源 [`docs/dock-tile.png`](docs/dock-tile.png)*
 
 | 项目 | 说明 |
 |---|---|
@@ -301,8 +304,11 @@ dg gui --rebuild    # 改过窗口源码后强制重编译
 | **悬停 / 点击** | 和普通图标一样；点击在图标**正上方**原位弹出分组面板 |
 | **拖放目标** | 从 Finder 把 `.app` 拖上去即加入分组，松手时图标高亮 |
 
-图标本身是**实时合成**的：读组内每个 App 的原始图标 → 按 iOS 主屏文件夹的比例拼成
-2×2 → 套上风格底板。文件夹内容一变（`add` / `del` / 拖放 / `watch` 监听），重跑一次就同步。
+图标本身是**实时合成**的，设计走 iOS 主屏文件夹的路线：读组内每个 App 的原始图标 →
+按主屏文件夹的比例拼成 2×2 四格 → 套一层实心底板托住整体（默认深灰石墨 `graphite`，
+另 6 种见[图标风格](#图标风格)）。因为它和系统图标**同尺寸、同基线、同样的圆角语言**，
+混在 Dock 里没有任何违和感 —— 这是它视觉上「像原生」的关键。
+文件夹内容一变（`add` / `del` / 拖放 / `watch` 监听），重跑一次就同步。
 
 ### 图标风格
 
@@ -311,6 +317,7 @@ dg gui --rebuild    # 改过窗口源码后强制重编译
 图标散着；而纯白底板又会让白底 App 图标（GitHub、Hermes、不少开发工具都是）糊进背景。
 
 ![图标风格](docs/icon-styles.png)
+*图：7 种风格卡片，页脚为真实 58 px Dock 尺寸对比 · 图源 [`docs/icon-styles.png`](docs/icon-styles.png)*
 
 | 风格 | 说明 |
 |---|---|
@@ -337,6 +344,7 @@ dg gui --rebuild    # 改过窗口源码后强制重编译
 连形状都丢了；深色玻璃上这些白底图标反而最清楚，整体观感也更接近系统 Dock 文件夹展开的样子。
 
 ![面板材质](docs/panel-materials.png)
+*图：默认深色玻璃 `hud`（左）与浅色 `menu`（右）并排 · 图源 [`docs/panel-materials.png`](docs/panel-materials.png)*
 
 ```bash
 dg style                 # 看当前用了什么 + 列出所有可选材质
@@ -370,6 +378,7 @@ dg style AI default      # 「AI」退回全局默认
 看 Dock 尺寸**；`dock-grid` 一切都从条高推，所以它永远和 Dock 成整数倍关系。
 
 ![面板排列](docs/panel-grid.png)
+*图：默认 `row` 长条（左）与可选 `auto` 网格（右），每行独立居中 · 图源 [`docs/panel-grid.png`](docs/panel-grid.png)*
 
 ```bash
 dg layout                          # 看当前设置 + 每个分组实际排成几宫格、面板多大
@@ -574,6 +583,21 @@ Swift，但两套实现产出逐字节一致，配图脚本直接 import Python 
 ```bash
 /usr/bin/python3 tools/readme_assets.py     # 重新生成 docs/*.png
 ```
+
+**配图清单** —— 正文用图全部在 `docs/`；真机证据截图放 `references/images/`，不进正文：
+
+| 图 | 路径 | 内容 | 来源 |
+|---|---|---|---|
+| 首图 | `docs/hero.png` | Dock 里的分组图标 + 点开后的面板 | 脚本生成 |
+| Dock 图标 | `docs/dock-tile.png` | 真实 Dock 条中的图标样式与拼贴来源 | 脚本生成 |
+| 图标风格 | `docs/icon-styles.png` | 7 种风格 + 58 px 真实尺寸对比 | 脚本生成 |
+| 面板材质 | `docs/panel-materials.png` | `hud` 与 `menu` 并排 | 脚本生成 |
+| 面板排列 | `docs/panel-grid.png` | `row` 长条 vs `auto` 网格 | 脚本生成 |
+| 管理窗口 | `docs/manager.png` | 图形界面（唯一真机截图） | `screencapture` |
+| 圆角修复证据 | `references/images/panel-corner-radius.png` | 只裁内容视图 vs 裁到窗口层 | 真机截图 |
+
+所有脚本生成的图统一 840 pt 画布 ×2 渲染、同一套背景 / 留白 / 字体 / 光影，配色一致；
+图上文字一律英文（SF Pro 无中文字形）。
 
 Swift 引擎的开发说明（迁移策略、对照测试、不能破的约定）见
 [`swift/README.md`](swift/README.md)；预编译发布包用 `tools/build-release.sh`
