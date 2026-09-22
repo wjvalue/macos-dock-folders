@@ -5,10 +5,25 @@
 // 这是整个工具最核心的一步：拼贴图标 + Swift 二进制 + Info.plist + 签名，
 // 产出一个能放进 Dock 的 App。
 
+import AppKit
 import Foundation
 
 let LSREGISTER = "/System/Library/Frameworks/CoreServices.framework"
     + "/Frameworks/LaunchServices.framework/Support/lsregister"
+
+/// 给 .app 设「自定义图标」（= Finder 显示简介里拖图标的机制）。
+///
+/// macOS 26 会把 App 自带的 icns 缩进 squircle 容器垫灰底（社区称
+/// 「squircle 监狱」），自定义图标是唯一豁免通道，系统原样渲染。
+/// setIcon 只写 bundle 根的 `Icon\r` + FinderInfo xattr，在 Contents/ 之外，
+/// 不动代码签名密封。
+///
+/// ⚠️ 必须压轴调用（codesign/lsregister/mtime 都会重置图标记录），没重建
+/// 的轮次也要无条件重设一次（自愈）。点目录 .apps 不是问题，实测生效。
+func applyCustomIcon(_ mosaic: URL, to app: URL) -> Bool {
+    guard let img = NSImage(contentsOf: mosaic) else { return false }
+    return NSWorkspace.shared.setIcon(img, forFile: app.path)
+}
 
 /// 启动器源码查找：仓库优先，缓存兜底。
 ///
@@ -164,6 +179,11 @@ func buildLauncherApp(_ g: JSONObject, style: String = DEFAULT_STYLE, force: Boo
         || stampOld != digest
 
     guard needRebuild else {
+        // ⚠️ 没重建也要**无条件**重设自定义图标：任何一轮 codesign/lsregister/
+        // mtime 触碰都会把 IconServices 的图标记录重置回「缩进白框的合成图」
+        // （2026-09-22 实测：Icon\r 还在，但渲染被接管；重跑一次 setIcon 即恢复）。
+        // setIcon 很便宜（写 Icon\r + xattr），当自愈手段用。
+        _ = applyCustomIcon(mosaic, to: app)
         return (app, ok, missing, false)
     }
 
@@ -205,10 +225,16 @@ func buildLauncherApp(_ g: JSONObject, style: String = DEFAULT_STYLE, force: Boo
 
     try? digest.write(to: stamp, atomically: true, encoding: .utf8)
 
-    // 产物要能脱离「我这台机器」。清隔离属性放在签名之后是安全的 ——
+    // 产物要能脱离「我这台机」。清隔离属性放在签名之后是安全的 ——
     // 签名保护的是文件内容，xattr 不在保护范围内。
     if stripQuarantine(app) {
         print("  已清除「\(app.lastPathComponent)」继承来的隔离属性")
+    }
+
+    // 设自定义图标（压轴：重签/lsregister 都会重置图标记录，见函数注释）。
+    if !applyCustomIcon(mosaic, to: app) {
+        FileHandle.standardError.write(
+            "⚠️ 「\(name)」自定义图标设置失败，Dock 上可能被系统缩进白框\n".data(using: .utf8)!)
     }
     return (app, ok, missing, true)
 }

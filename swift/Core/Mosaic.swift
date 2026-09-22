@@ -12,7 +12,8 @@
 //   · `paste(color, (0,0), mask)` 不是 source-over，而是**逐通道线性插值**
 //     out[c] = src[c]*m + dst[c]*(1-m)，alpha 通道也参与。
 //   · 竖直渐变是 top + (bottom-top)*y/(size-1)，逐行取整，不是「建 1x2 再放大」。
-//   · 底板只占 85% 边长（ICON_INSET），不是铺满画布。
+//   · 底板占 96% 边长（ICON_INSET=0.02，2026-09-22 起的全覆盖参数；9-22 之前
+//     是 85% / 0.075），不是铺满画布 —— 那一圈是给投影和描边的余量。
 //   · PIL 的矩形是**闭区间**（含右下端点），CGRect 是半开区间 —— 差这 1 像素，
 //     表现是「底板只有右边缘和下边缘出现差异带」。
 //   · PIL 的 GaussianBlur 其实是 **3 次 box blur 近似**，不是精确高斯。
@@ -53,31 +54,31 @@ let STYLES: [String: Style] = [
     "dock": Style(
         bg: (RGBA((225, 227, 234, 252)), RGBA((198, 201, 213, 253))),
         hair: RGBA((255, 255, 255, 200)), edge: (RGBA((122, 126, 141, 135)), 0.0025),
-        cell: 0.440, pad: 0.085, gap: 0.045, shadow: true, iconShadow: true),
+        cell: 0.440, pad: 0.045, gap: 0.035, shadow: true, iconShadow: true),
     "dock-deep": Style(
         bg: (RGBA((209, 212, 221, 252)), RGBA((176, 180, 194, 253))),
         hair: RGBA((255, 255, 255, 205)), edge: (RGBA((104, 108, 124, 150)), 0.0025),
-        cell: 0.440, pad: 0.085, gap: 0.045, shadow: true, iconShadow: true),
+        cell: 0.440, pad: 0.045, gap: 0.035, shadow: true, iconShadow: true),
     "paper": Style(
         bg: (RGBA((255, 255, 255, 253)), RGBA((238, 239, 244, 253))),
         hair: RGBA((255, 255, 255, 225)), edge: (RGBA((146, 149, 160, 135)), 0.0022),
-        cell: 0.440, pad: 0.085, gap: 0.045, shadow: true, iconShadow: true),
+        cell: 0.440, pad: 0.045, gap: 0.035, shadow: true, iconShadow: true),
     "frost-light": Style(
         bg: (RGBA((248, 249, 252, 248)), RGBA((196, 201, 213, 251))),
         hair: RGBA((255, 255, 255, 205)), edge: (RGBA((112, 116, 132, 115)), 0.0025),
-        cell: 0.440, pad: 0.085, gap: 0.045, shadow: true, iconShadow: true),
+        cell: 0.440, pad: 0.045, gap: 0.035, shadow: true, iconShadow: true),
     "frost-blue": Style(
         bg: (RGBA((224, 235, 251, 249)), RGBA((154, 182, 222, 251))),
         hair: RGBA((255, 255, 255, 210)), edge: (RGBA((74, 108, 158, 120)), 0.0025),
-        cell: 0.440, pad: 0.085, gap: 0.045, shadow: true, iconShadow: true),
+        cell: 0.440, pad: 0.045, gap: 0.035, shadow: true, iconShadow: true),
     "glass-dark": Style(
         bg: (RGBA((90, 91, 101, 249)), RGBA((28, 29, 35, 252))),
         hair: RGBA((255, 255, 255, 125)), edge: (RGBA((0, 0, 0, 145)), 0.0025),
-        cell: 0.440, pad: 0.085, gap: 0.045, shadow: true, iconShadow: false),
+        cell: 0.440, pad: 0.045, gap: 0.035, shadow: true, iconShadow: false),
     "graphite": Style(
         bg: (RGBA((124, 126, 136, 250)), RGBA((68, 70, 80, 252))),
         hair: RGBA((255, 255, 255, 155)), edge: (RGBA((0, 0, 0, 155)), 0.0025),
-        cell: 0.440, pad: 0.085, gap: 0.045, shadow: true, iconShadow: false),
+        cell: 0.440, pad: 0.045, gap: 0.035, shadow: true, iconShadow: false),
 ]
 // DEFAULT_STYLE 定义在 Core/Config.swift（和 Python 的 DEFAULT_STYLE 对齐），
 // 这里不要重复定义 —— 单独定义一份的话，哪天默认风格改了会漏改这一处。
@@ -287,8 +288,8 @@ func pilDiv(_ a: Int, _ b: Int) -> Int {
     return q
 }
 
-func panelBase(S: Int, st: Style) -> Bitmap {
-    let inset = Int(Double(S) * ICON_INSET)
+func panelBase(S: Int, st: Style, insetRatio: Double = ICON_INSET) -> Bitmap {
+    let inset = Int(Double(S) * insetRatio)
     let side = S - 2 * inset
     let radius = Int(Double(side) * BG_RADIUS)
     // PIL 的 box 是 (inset, inset, S-inset, S-inset)，闭区间
@@ -511,9 +512,19 @@ func writePNG(_ img: CGImage, to path: String) {
 func makeMosaic(_ icons: [String], out: String, size S: Int = 1024,
                 style: String = DEFAULT_STYLE) -> String {
     let st = STYLES[style] ?? STYLES[DEFAULT_STYLE]!
-    var canvas = panelBase(S: S, st: st)
-    let inset = Int(Double(S) * ICON_INSET)
+    var canvas = panelBase(S: S, st: st, insetRatio: TILE_INSET)
+    let inset = Int(Double(S) * TILE_INSET)
     let side = S - 2 * inset
+    let radius = Int(Double(side) * BG_RADIUS)
+    let clipBox = pilRect(inset, inset, S - inset, S - inset)
+
+    // ⚠️ 底板形状 mask：图标和投影裁进底板圆角。macOS 26 合规检查不允许
+    // 弧外出现中高不透明像素（>~150 即打回），角落格图标天然越出弧线。
+    let clip = grayMask(size: S) { ctx in
+        ctx.setFillColor(gray: 1, alpha: 1)
+        ctx.addPath(roundedRectPath(clipBox, radius: CGFloat(radius)))
+        ctx.fillPath()
+    }
 
     let pad = Int(Double(side) * st.pad)
     var gap = Int(Double(side) * st.gap)
@@ -537,8 +548,19 @@ func makeMosaic(_ icons: [String], out: String, size S: Int = 1024,
                  (pad, pad + cell + gap), (pad + cell + gap, pad + cell + gap)]
     }
     for (i, ip) in icons.prefix(4).enumerated() {
-        guard let ic = loadBitmap(ip, target: cell) else { continue }
+        guard var ic = loadBitmap(ip, target: cell) else { continue }
         let pos = (inset + slots[i].0, inset + slots[i].1)
+        // 图标先裁进底板圆角（投影由裁后的 alpha 派生，随之一起被裁）
+        for yy in 0..<cell {
+            let cy = pos.1 + yy
+            for xx in 0..<cell {
+                let cm = Double(clip[cy * S + pos.0 + xx]) / 255.0
+                if cm < 1 {
+                    let i2 = (yy * cell + xx) * 4 + 3
+                    ic.px[i2] = UInt8(clamping: Int(Double(ic.px[i2]) * cm))
+                }
+            }
+        }
         if st.iconShadow {
             // _drop_shadow：把图标的 alpha 下移一点、模糊、乘 strength，再 paste
             var m = [Double](repeating: 0, count: S * S)
@@ -557,6 +579,14 @@ func makeMosaic(_ icons: [String], out: String, size S: Int = 1024,
             canvas.blend(color: RGBA(30, 32, 42, 255), mask: m)
         }
         canvas.compositeOver(ic, at: pos.0, oy: pos.1)
+    }
+
+    // ⚠️ 合规钳制：弧外 alpha 一律 ≤120（与 edge 描边同级，可通过）。
+    // hairline 骑在弧上（clip<250 的过渡带按比例放行会漏半圈 210 亮环）。
+    for i in 0..<(S * S) {
+        let cap: Double = clip[i] >= 250 ? 255 : 120
+        let i4 = i * 4 + 3
+        if Double(canvas.px[i4]) > cap { canvas.px[i4] = UInt8(cap) }
     }
 
     writePNG(canvas, to: out)

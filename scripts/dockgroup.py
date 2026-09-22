@@ -88,7 +88,7 @@ from pathlib import Path
 __version__ = "1.3.1"
 
 try:
-    from PIL import Image, ImageDraw, ImageFilter, ImageFont
+    from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 except ImportError:
     # 这条文案以前写的是「请用 /usr/bin/python3 运行（系统自带 PIL）」——错的。
     # Pillow 不在 macOS 自带依赖里，得用户自己 pip 装；而报错时用户用的
@@ -131,8 +131,14 @@ def engine_command() -> str:
     return str(SCRIPT_DIR / "dockgroup.py")
 
 # iOS 主屏文件夹的几何比例（相对文件夹边长）
-ICON_INSET = 0.075      # 画布四周留白，对齐普通 App 图标 86.5% 的内容占比
+ICON_INSET = 0.02       # 画布四周留白。0.075 时代底板只占 85%，浅色风格在
+                        # Dock 上会显出一圈明显的留白边（2026-09-22 老大要求
+                        # 全覆盖）→ 收到 2%：肉眼无边距，同时给投影/描边留呼吸位
 BG_RADIUS = 0.235       # 文件夹底圆角
+TILE_INSET = 0.098      # 拼贴图标（Dock 分组图标）专用留白：Apple 标准图标
+                        # 网格 824/1024。自定义图标通道被系统 1:1 渲染后，
+                        # 全覆盖反而比邻居大一圈，按系统网格留白才一样大
+                        # （2026-09-22）。面板/管理器图标仍走 ICON_INSET 全覆盖
 
 # 拼贴图标风格预设
 #   bg  : 底板渐变 (顶, 底)，None = 无底板
@@ -146,32 +152,32 @@ STYLES = {
     "dock": dict(
         bg=((225, 227, 234, 252), (198, 201, 213, 253)),
         hair=(255, 255, 255, 200), edge=((122, 126, 141, 135), 0.0025),
-        cell=0.440, pad=0.085, gap=0.045, shadow=True, icon_shadow=True),
+        cell=0.440, pad=0.045, gap=0.035, shadow=True, icon_shadow=True),
     # 比 dock 再深一档，白图标对比更强
     "dock-deep": dict(
         bg=((209, 212, 221, 252), (176, 180, 194, 253)),
         hair=(255, 255, 255, 205), edge=((104, 108, 124, 150), 0.0025),
-        cell=0.440, pad=0.085, gap=0.045, shadow=True, icon_shadow=True),
+        cell=0.440, pad=0.045, gap=0.035, shadow=True, icon_shadow=True),
     "paper": dict(
         bg=((255, 255, 255, 253), (238, 239, 244, 253)),
         hair=(255, 255, 255, 225), edge=((146, 149, 160, 135), 0.0022),
-        cell=0.440, pad=0.085, gap=0.045, shadow=True, icon_shadow=True),
+        cell=0.440, pad=0.045, gap=0.035, shadow=True, icon_shadow=True),
     "frost-light": dict(
         bg=((248, 249, 252, 248), (196, 201, 213, 251)),
         hair=(255, 255, 255, 205), edge=((112, 116, 132, 115), 0.0025),
-        cell=0.440, pad=0.085, gap=0.045, shadow=True, icon_shadow=True),
+        cell=0.440, pad=0.045, gap=0.035, shadow=True, icon_shadow=True),
     "frost-blue": dict(
         bg=((224, 235, 251, 249), (154, 182, 222, 251)),
         hair=(255, 255, 255, 210), edge=((74, 108, 158, 120), 0.0025),
-        cell=0.440, pad=0.085, gap=0.045, shadow=True, icon_shadow=True),
+        cell=0.440, pad=0.045, gap=0.035, shadow=True, icon_shadow=True),
     "glass-dark": dict(
         bg=((90, 91, 101, 249), (28, 29, 35, 252)),
         hair=(255, 255, 255, 125), edge=((0, 0, 0, 145), 0.0025),
-        cell=0.440, pad=0.085, gap=0.045, shadow=True, icon_shadow=False),
+        cell=0.440, pad=0.045, gap=0.035, shadow=True, icon_shadow=False),
     "graphite": dict(
         bg=((124, 126, 136, 250), (68, 70, 80, 252)),
         hair=(255, 255, 255, 155), edge=((0, 0, 0, 155), 0.0025),
-        cell=0.440, pad=0.085, gap=0.045, shadow=True, icon_shadow=False),
+        cell=0.440, pad=0.045, gap=0.035, shadow=True, icon_shadow=False),
 }
 DEFAULT_STYLE = "graphite"
 # 默认面板材质。
@@ -646,7 +652,7 @@ def _drop_shadow(canvas, icon, pos, blur=0.011, offset=0.007, strength=0.34):
     canvas.paste(Image.new("RGBA", canvas.size, (30, 32, 42, 255)), (0, 0), mask)
 
 
-def _panel_base(S, st):
+def _panel_base(S, st, inset_ratio=ICON_INSET):
     """画图标底板：投影 + 渐变 + 内圈高光 + 外圈描边。
 
     返回 (canvas, box, side)。拼贴图标和管理窗口图标共用这一份 —— 两边的底板
@@ -701,7 +707,7 @@ def make_mosaic(icon_paths, out, size: int = 1024,
     out = Path(out)
     S = size
     st = STYLES.get(style, STYLES[DEFAULT_STYLE])
-    canvas, box, side = _panel_base(S, st)
+    canvas, box, side = _panel_base(S, st, inset_ratio=TILE_INSET)
     inset = box[0]
 
     n = len(icon_paths)
@@ -721,15 +727,31 @@ def make_mosaic(icon_paths, out, size: int = 1024,
                  (pad, pad + cell + gap), (pad + cell + gap, pad + cell + gap)]
 
     with_icon_shadow = st.get("icon_shadow", False)
+    # ⚠️ 图标和图标投影都要裁进底板圆角：macOS 26 的图标合规检查不允许
+    # 底板外出现中高不透明像素（实测 >150 左右整张打回，2026-09-22），
+    # 角落格的图标天然越出底板圆弧，不裁自定义图标就被系统缩进白框。
+    clip = Image.new("L", (S, S), 0)
+    ImageDraw.Draw(clip).rounded_rectangle(
+        (inset, inset, S - inset, S - inset),
+        radius=int(side * BG_RADIUS), fill=255)
     for i, ip in enumerate(icon_paths[:4]):
         try:
             ic = Image.open(ip).convert("RGBA").resize((cell, cell), Image.LANCZOS)
         except Exception:
             continue
         pos = (inset + slots[i][0], inset + slots[i][1])
+        ic.putalpha(ImageChops.multiply(
+            ic.getchannel("A"),
+            clip.crop((pos[0], pos[1], pos[0] + cell, pos[1] + cell))))
         if with_icon_shadow:
             _drop_shadow(canvas, ic, pos)
         canvas.alpha_composite(ic, pos)
+
+    # ⚠️ 合规钳制（收尾必过）：底板圆弧以外的像素 alpha 一律 ≤ 120（与 edge
+    # 描边同级，实测可通过）。hairline 的半圈越界与图标角残留都会超过，
+    # macOS 26 检查到就把整张自定义图标打回（缩进白框）。与 Swift 对齐。
+    cap = ImageChops.lighter(clip, Image.new("L", (S, S), 120))
+    canvas.putalpha(ImageChops.darker(canvas.getchannel("A"), cap))
 
     out.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(out, "PNG")
@@ -1248,7 +1270,7 @@ def dock_read(refresh: bool = False) -> dict:
     return _dock_cache
 
 
-def dock_write(pl: dict, force_restart: bool = False):
+def dock_write(pl: dict, rebuilt: bool = False, finder_restart: bool = True):
     global _dock_cache
     # DOCKGROUP_SKIP_DOCK=1：整体跳过（不备份、不导入、不 killall）——
     # CI / 脚本化场景「只生成产物、绝不打扰 Dock」的总开关。与
@@ -1263,11 +1285,26 @@ def dock_write(pl: dict, force_restart: bool = False):
     # 深比较过就整段跳过。Python 的 bookmark 走 JXA，若某天系统让它变得
     # 不确定，最坏也只是退回「每次都重启」的旧行为，不会写坏配置。
     #
-    # ⚠️ force_restart 例外：bundle 重建后图标变了，但 Dock plist 条目本身
-    # （bundle id / label / bookmark）不变，深比较会误判成「没变化」——
-    # 这时必须照写照重启，否则 Dock 上永远是旧图标。
-    if not force_restart and dock_read(refresh=True) == pl:
-        print("Dock 配置无变化，跳过重启")
+    # ⚠️ rebuilt（零闪模式，与 Swift 版同规则）：bundle 重建后图标变了，但
+    # Dock plist 条目本身（bundle id / label / bookmark）不变 —— 这种「纯图标
+    # 变化」不重启 Dock，新图标在下次点击分组图标时立即显示。
+    # 比较用的副本：剥掉 tile-data["book"]。bookmark 是 bundle 内容的指纹，
+    # 图标一变它就变 —— 但纯图标变化（icns 文件名已换新）不需要动 Dock 条，
+    # 把它算进「有变化」会白白闪一次。与 Swift 版 normalized() 同规则。
+    import copy as _copy
+
+    def _normalized(src):
+        c = _copy.deepcopy(src)
+        for key in ("persistent-apps", "persistent-others"):
+            for t in c.get(key, []):
+                t.get("tile-data", {}).pop("book", None)
+        return c
+
+    if _normalized(dock_read(refresh=True)) == _normalized(pl):
+        if rebuilt:
+            print("Dock 配置无变化，跳过重启（已重建的图标将在下次点击分组图标时显示）")
+        else:
+            print("Dock 配置无变化，跳过重启")
         _dock_cache = pl
         return
     if dock_plist_override() is not None:
@@ -1279,7 +1316,10 @@ def dock_write(pl: dict, force_restart: bool = False):
     subprocess.run(["defaults", "import", DOCK_DOMAIN, "-"], input=data, check=True)
     _dock_cache = pl
     sh(["killall", "Dock"])
-    sh(["killall", "Finder"])
+    # Finder 重启 = 全屏闪第二次（桌面整个重绘），只有动了右侧文件夹 Stack
+    # （文件夹自定义图标需要 Finder 刷新）才值得付这个代价 —— 与 Swift 版同规则。
+    if finder_restart:
+        sh(["killall", "Finder"])
 
 
 def tile_label(tile: dict):
@@ -1330,7 +1370,7 @@ def _insert_after(tiles, tile, anchor_path):
     tiles.append(tile)
 
 
-def dock_sync(cfg, only=None, prune=True, force_restart=False):
+def dock_sync(cfg, only=None, prune=True, rebuilt=False):
     """把分组文件夹写进 Dock。
 
     位置策略（2026-09-22 重写，与 Swift 版 dockSync 同规则）：
@@ -1454,7 +1494,9 @@ def dock_sync(cfg, only=None, prune=True, force_restart=False):
 
     pl["persistent-apps"] = left
     pl["persistent-others"] = right
-    dock_write(pl, force_restart=force_restart)
+    # Finder 只有在动了右侧文件夹 Stack 时才需要重启（见 dock_write 内注释）
+    dock_write(pl, rebuilt=rebuilt,
+               finder_restart=any(g.get("placement", "left") == "right" for g in targets))
     return [g["name"] for g in targets]
 
 
@@ -2077,7 +2119,7 @@ def cmd_apply(cfg, args):
         print(f"  ✓ {g['name']} → {dest}（{len(ok)} 个 App）")
         if missing:
             print(f"       ⚠ 跳过 {len(missing)} 个不存在的 App")
-    dock_sync(cfg, only=None, prune=not keep, force_restart=any_rebuilt)
+    dock_sync(cfg, only=None, prune=not keep, rebuilt=any_rebuilt)
     after = len(dock_read().get("persistent-apps", []))
     print(f"\nDock 左侧 App 图标：{before} → {after}")
     if kill_launchers():
@@ -2303,7 +2345,14 @@ def refresh_groups(cfg, names=None, quiet=False):
         kill_launchers()
         if dock_plist_override() is None:      # 对照测试模式下不碰真实 Dock
             sh(["killall", "Dock"])
-            sh(["killall", "Finder"])
+            # Finder 重启 = 全屏闪第二次，只在有右侧文件夹 Stack 被重建时才付代价
+            names_set = set(names or [])
+            right_touched = any(g.get("placement", "left") == "right"
+                                and g["name"] in touched
+                                and (not names_set or g["name"] in names_set)
+                                for g in cfg["groups"])
+            if right_touched:
+                sh(["killall", "Finder"])
     if not quiet:
         for s in skipped:
             print(f"  跳过：{s}")

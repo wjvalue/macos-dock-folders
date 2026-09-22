@@ -76,8 +76,14 @@ func engineCommand() -> String {
 }
 
 // iOS 主屏文件夹的几何比例（相对文件夹边长）
-let ICON_INSET = 0.075
+let ICON_INSET = 0.02
 let BG_RADIUS = 0.235
+
+/// 拼贴图标（Dock 里的分组图标）专用留白：Apple 标准图标网格 824/1024。
+/// 为什么和 ICON_INSET 分开：面板底板要「全覆盖」（96%）是面板自己的观感；
+/// 而 Dock 图标在 2026-09-22 起走「自定义图标」通道被系统 1:1 渲染（不再被
+/// 缩进白框），全覆盖反而比邻居图标大一圈 —— 按系统网格留白才和大家一样大。
+let TILE_INSET = 0.098
 
 /// 与 scripts/dockgroup.py 的 `__version__` 保持一致。
 let VERSION = "1.3.1"
