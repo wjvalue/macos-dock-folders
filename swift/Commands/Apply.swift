@@ -91,7 +91,7 @@ func cmdApply(_ cfg: JSONObject, _ args: [String]) {
         }
         print("  分组「\(g.name)」位置：\(pos)")
     }
-    // 这句和 Python 版**逐字相同**（含 dockgroup.py 这个名字）：
-    // 迁移期两边输出要能直接 diff，等切换之后再改成 dg restore。
-    print("备份在 ~/Dock Groups/.backup/，出错用 dockgroup.py restore 回滚")
+    // 这句和 Python 版**逐字相同**：迁移完成，统一指路 dg 子命令
+    // （分发形态不装 Pillow，dockgroup.py 跑不起来，别再让用户走死路）。
+    print("备份在 ~/Dock Groups/.backup/，出错用 dg restore 回滚")
 }

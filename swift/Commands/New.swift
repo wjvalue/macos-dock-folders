@@ -108,8 +108,7 @@ func cmdNew(_ cfg0: JSONObject, _ args: [String]) {
         print()
         cmdApply(cfg, [gname])
     } else {
-        let script = SCRIPT_DIR.appendingPathComponent("dockgroup.py").path
-        print("\n下一步：\(script) preview \(gname)   → 看图标")
-        print("       \(script) apply \(gname)     → 写进 Dock")
+        print("\n下一步：dg preview \(gname)   → 看图标")
+        print("       dg apply \(gname)     → 写进 Dock")
     }
 }

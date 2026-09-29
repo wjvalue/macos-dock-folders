@@ -51,5 +51,5 @@ func cmdInit(_ args: [String]) {
     print()
     print("配置里先放了一个示例分组「\(name)」，enabled=false 不会被自动应用。")
     print("提示：也可以直接用 new 命令建组，不用手改 JSON：")
-    print("  \(SCRIPT_DIR.appendingPathComponent("dockgroup.py").path) new \(name) \"WorkBuddy\" \"Google Chrome\"")
+    print("  dg new \(name) \"WorkBuddy\" \"Google Chrome\"")
 }

@@ -232,7 +232,7 @@ LAYOUTS = {
     "auto": "自适应网格。1→1×1，2→2×1，3~4→2×2 四宫格，"
             "5~6→3×2，7~9→3×3 九宫格，≥10→4 列",
     "dock": "和 Dock 条等高（72）。图标 44 = Dock 图标同大，不画名字（悬停出系统提示）；"
-            "4 个 App 是 242×72，弹在 Dock 上像同一条栏的延续",
+            "4 个 App 是 254×72，弹在 Dock 上像同一条栏的延续",
     "dock-name": "和 Dock 条等高，另让 8pt 给名字（80）。图标 42 = Dock 图标真实大小；"
                  "4 个 App 是 378×80",
     "dock-grid": "和 Dock 条两倍等高 · 无字网格。格子与 dock 同源（图标 44、不画名字），"
@@ -2066,7 +2066,7 @@ def cmd_init(cfg, args):
         print(f"  {i:2}. {Path(a).stem}")
     print(f"\n配置里先放了一个示例分组「{name}」，enabled=false 不会被自动应用。")
     print(f"提示：也可以直接用 new 命令建组，不用手改 JSON：")
-    print(f"  {SCRIPT_DIR / 'dockgroup.py'} new {name} \"WorkBuddy\" \"Google Chrome\"")
+    print(f"  dg new {name} \"WorkBuddy\" \"Google Chrome\"")
 
 
 def cmd_new(cfg, args):
@@ -2099,8 +2099,8 @@ def cmd_new(cfg, args):
         print()
         cmd_apply(cfg, [gname])
     else:
-        print(f"\n下一步：{SCRIPT_DIR / 'dockgroup.py'} preview {gname}   → 看图标")
-        print(f"       {SCRIPT_DIR / 'dockgroup.py'} apply {gname}     → 写进 Dock")
+        print(f"\n下一步：dg preview {gname}   → 看图标")
+        print(f"       dg apply {gname}     → 写进 Dock")
 
 
 
@@ -2173,7 +2173,7 @@ def cmd_apply(cfg, args):
         pos = "左侧 App 区（%s 之后）" % Path(g["after"]).stem if g.get("after") \
             else ("分隔线右侧" if g.get("placement") == "right" else "左侧 App 区末尾")
         print(f"  分组「{g['name']}」位置：{pos}")
-    print("备份在 ~/Dock Groups/.backup/，出错用 dockgroup.py restore 回滚")
+    print("备份在 ~/Dock Groups/.backup/，出错用 dg restore 回滚")
 
 
 def cmd_rebuild(cfg, args):
@@ -2514,7 +2514,7 @@ def cmd_open(cfg, args):
         sh(["open", str(folder)])
     print(f"已打开 {folder}")
     print("往里加 App：按住 ⌘ ⌥ 从「应用程序」拖进来 = 建别名（不会移动原 App）")
-    print("加完跑一次：dockgroup.py rebuild")
+    print("加完跑一次：dg rebuild")
 
 
 def cmd_remove(cfg, args):

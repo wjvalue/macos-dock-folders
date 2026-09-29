@@ -45,8 +45,6 @@ func showHelp() {
       gui [--rebuild]      打开图形界面（分组管理窗口，改完即时预览）
 
     迁移完成：全部子命令已是 Swift 实现（tools/compare_cli.sh 逐项对齐）。
-
-    迁移进行中：两套实现并存，逐个命令对齐后再切换。
     """)
 }
 
@@ -57,10 +55,6 @@ guard let cmd = rawArgs.first else {
     exit(0)
 }
 let args = Array(rawArgs.dropFirst())
-
-/// 还没搬过来的子命令，给出明确指引而不是含糊的「未知命令」。
-/// gui 是最后一个搬完的（2026-09-21）：20/20，迁移期结束。
-let notYetPorted: Set<String> = []
 
 switch cmd {
 case "--version", "-v", "version":
@@ -234,15 +228,8 @@ case "__grab-icons":
     }
 
 default:
-    if notYetPorted.contains(cmd) {
-        let py = SCRIPT_DIR.appendingPathComponent("dockgroup.py").path
-        FileHandle.standardError.write("""
-        「\(cmd)」还没搬到 Swift 版。
-        暂时用 Python 版：/usr/bin/python3 "\(py)" \(cmd) \(args.joined(separator: " "))
-
-        """.data(using: .utf8)!)
-        exit(3)
-    }
+    // 「未知命令」直接报错。迁移期的 notYetPorted 指引分支已随迁移完成删除
+    //（20/20，2026-09-21）—— 空集合和不可达的 Python 指引只会误导读者。
     FileHandle.standardError.write("未知命令：\(cmd)（用 --help 看用法）\n".data(using: .utf8)!)
     exit(2)
 }

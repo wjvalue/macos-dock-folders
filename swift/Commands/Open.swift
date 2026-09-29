@@ -21,5 +21,5 @@ func cmdOpen(_ cfg: JSONObject, _ args: [String]) {
     }
     print("已打开 \(folder.path)")
     print("往里加 App：按住 ⌘ ⌥ 从「应用程序」拖进来 = 建别名（不会移动原 App）")
-    print("加完跑一次：dockgroup.py rebuild")
+    print("加完跑一次：dg rebuild")
 }
