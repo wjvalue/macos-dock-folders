@@ -54,7 +54,10 @@ func stripQuarantine(_ path: URL) -> Bool {
 @discardableResult
 func killLaunchers() -> Bool {
     if dockPlistOverride != nil { return false }
-    let r = run("/usr/bin/pkill", ["-f", "DockGroupLauncher"])
+    // -x 精确按进程名匹配，别用 -f：那是完整命令行子串匹配，参数里恰好含
+    // 「DockGroupLauncher」的无辜进程（编辑器开着这个文件、grep 等）会被误杀。
+    // （2026-09-29 改；Python 侧 kill_launchers 同款。）
+    let r = run("/usr/bin/pkill", ["-x", "DockGroupLauncher"])
     if r.status == 0 {
         Thread.sleep(forTimeInterval: 0.4)
         return true

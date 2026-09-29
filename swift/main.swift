@@ -184,6 +184,11 @@ case "__build-group":
     } catch let e as DgError {
         FileHandle.standardError.write("\(e.message)\n".data(using: .utf8)!)
         exit(1)
+    } catch {
+        // Foundation 抛上来的错误（NSCocoaErrorDomain 等）也不能裸崩 ——
+        // 打成可读的报错再退。
+        FileHandle.standardError.write("\(error)\n".data(using: .utf8)!)
+        exit(1)
     }
 
 case "__dump-config":

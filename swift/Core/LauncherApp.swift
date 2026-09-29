@@ -188,12 +188,16 @@ func buildLauncherApp(_ g: JSONObject, style: String = DEFAULT_STYLE, force: Boo
     }
 
     // 覆盖 exe 必须在签名之前：改了 bundle 内容不重签，macOS 会拒绝启动。
-    try? FileManager.default.createDirectory(at: exe.deletingLastPathComponent(),
-                                             withIntermediateDirectories: true)
-    try? FileManager.default.createDirectory(at: icon.deletingLastPathComponent(),
-                                             withIntermediateDirectories: true)
-    try? FileManager.default.removeItem(at: exe)
-    try? FileManager.default.copyItem(at: binary, to: exe)
+    // ⚠️ 这一段不许 try?：磁盘满 / 权限失败时静默产出「Info.plist 引用的 exe
+    // 不存在」的坏 bundle，Dock 上是坏图标，函数却报重建成功。（2026-09-29 改。）
+    try FileManager.default.createDirectory(at: exe.deletingLastPathComponent(),
+                                            withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: icon.deletingLastPathComponent(),
+                                            withIntermediateDirectories: true)
+    if FileManager.default.fileExists(atPath: exe.path) {
+        try FileManager.default.removeItem(at: exe)   // 首次构建时 exe 还不存在，跳过
+    }
+    try FileManager.default.copyItem(at: binary, to: exe)
     run("/bin/chmod", ["755", exe.path])
     // 清掉旧的 icns（含老版本的 AppIcon.icns 和上一轮的 AppIcon-*.icns）
     if let entries = try? FileManager.default.contentsOfDirectory(
@@ -205,11 +209,17 @@ func buildLauncherApp(_ g: JSONObject, style: String = DEFAULT_STYLE, force: Boo
         }
     }
     let iconFile = icon.deletingLastPathComponent().appendingPathComponent("\(iconName).icns")
-    pngToIcns(mosaic, iconFile)
-    try? PlistValue.dict(core).xmlData().write(to: info, options: .atomic)
+    try pngToIcns(mosaic, iconFile)
+    try PlistValue.dict(core).xmlData().write(to: info, options: .atomic)
 
     let codesign = which("codesign") ?? "/usr/bin/codesign"
-    run(codesign, ["--force", "--sign", "-", app.path])
+    let cs = run(codesign, ["--force", "--sign", "-", app.path])
+    if !cs.ok {
+        // 签名失败不终止 —— Dock 仍会收这个 tile（下一轮 rebuild 会重签），
+        // 但必须让人知道产物现在可能起不来，别等「拖上没反应」才排查。
+        FileHandle.standardError.write(
+            "⚠️ 「\(name)」codesign 失败（退出码 \(cs.status)）：\n\(cs.errText)\n".data(using: .utf8)!)
+    }
 
     if FileManager.default.fileExists(atPath: LSREGISTER) {
         run(LSREGISTER, ["-f", app.path])
@@ -220,10 +230,10 @@ func buildLauncherApp(_ g: JSONObject, style: String = DEFAULT_STYLE, force: Boo
     let now = Date()
     for d in [app, app.appendingPathComponent("Contents"),
               app.appendingPathComponent("Contents/Resources"), iconFile] {
-        try? FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: d.path)
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: d.path)
     }
 
-    try? digest.write(to: stamp, atomically: true, encoding: .utf8)
+    try digest.write(to: stamp, atomically: true, encoding: .utf8)
 
     // 产物要能脱离「我这台机」。清隔离属性放在签名之后是安全的 ——
     // 签名保护的是文件内容，xattr 不在保护范围内。

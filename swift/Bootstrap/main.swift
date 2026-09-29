@@ -43,8 +43,13 @@ func fail(_ s: String) -> Never {
 }
 
 /// 逐字节 sha256，小写 hex —— 必须与引擎 Hash.swift 的 sha256Hex 一致。
+/// 读不出源码必须 fail 而不是拿空数据凑数：对空数据求的哈希写进摘要戳后
+/// 与引擎实算永远不相等，缓存永不命中，用户的「免 CLT」卖点静默失效。
+/// （2026-09-29 修。）
 func sha256HexFile(_ url: URL) -> String {
-    let d = (try? Data(contentsOf: url)) ?? Data()
+    guard let d = try? Data(contentsOf: url), !d.isEmpty else {
+        fail("读不到源码，无法计算摘要戳：\(url.path)")
+    }
     return SHA256.hash(data: d).map { String(format: "%02x", $0) }.joined()
 }
 
@@ -64,7 +69,11 @@ func run(_ path: String, _ args: [String], extraEnv: [String: String] = [:]) -> 
 }
 
 func copyOverwriting(_ src: URL, _ dst: URL) throws {
-    try? fm.removeItem(at: dst)
+    // removeItem 不许 try?：删不掉（目标被占用/权限）却接着 copy，报出来的是
+    // 「文件已存在」这种看不出真因的错误。（2026-09-29 改。）
+    if fm.fileExists(atPath: dst.path) {
+        try fm.removeItem(at: dst)
+    }
     try fm.copyItem(at: src, to: dst)
 }
 
@@ -154,8 +163,14 @@ do {
 
 // ── ④ 清隔离（只清拷贝产物，.app 本身由用户首开时处理）────────
 
+// xattr 失败要吭声：静默过去的话，用户第一次 spawn dg 才被 Gatekeeper 拦，
+// 看到的只有一句笼统的「启动失败」。（2026-09-29 加。）
 for target in [installRoot, dgDest, cacheDir] {
-    run("/usr/bin/xattr", ["-cr", target.path])
+    let rc = run("/usr/bin/xattr", ["-cr", target.path])
+    if rc != 0 {
+        out("⚠️  隔离属性清理失败（xattr -cr \(target.path) 退出码 \(rc)），"
+            + "首次运行可能被 Gatekeeper 拦截")
+    }
 }
 
 // ── ⑤ 打开管理窗口 ────────────────────────────────────────────

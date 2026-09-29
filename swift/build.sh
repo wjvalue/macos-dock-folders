@@ -17,10 +17,15 @@ OUT="${1:-$REPO/build/dg-swift}"
 
 # 把仓库位置烧进二进制 —— Swift 没有 Python 的 __file__，运行时无从知道自己
 # 是从哪个仓库编出来的。生成的文件不进版本库（见 .gitignore）。
-cat > Core/BuildInfo.swift <<EOF
+# ⚠️ heredoc 定界符必须加引号 + 值先做 Swift 字符串转义：不加引号的话，REPO
+# 里的 $、反引号、反斜杠都会被 shell 展开，生成的 BuildInfo.swift 直接语法损坏。
+# （本仓库路径带中文空格都没事，这是同类边角里最后一处。2026-09-29 改。）
+esc_repo=${REPO//\\/\\\\}      # 反斜杠
+esc_repo=${esc_repo//\"/\\\"}  # 双引号
+cat > Core/BuildInfo.swift <<'EOF'
 // 由 swift/build.sh 生成，别手工改，也别提交。
-let BUILD_REPO_ROOT = "$REPO"
 EOF
+printf 'let BUILD_REPO_ROOT = "%s"\n' "$esc_repo" >> Core/BuildInfo.swift
 
 mkdir -p "$(dirname "$OUT")"
 swiftc -O -o "$OUT" \

@@ -12,8 +12,10 @@
 import Foundation
 
 /// PNG → .icns。10 档尺寸和 Python 版一字不差。
-@discardableResult
-func pngToIcns(_ png: URL, _ icns: URL) -> URL {
+/// iconutil 失败必须报错（与 Python 的 `sh(..., check=True)` 同款）：
+/// 调用方在打包前已把旧 `AppIcon*.icns` 清掉 —— 静默失败会让 Info.plist 里的
+/// CFBundleIconFile 悬空，Dock 显示通用图标还当构建成功。（2026-09-29 改。）
+func pngToIcns(_ png: URL, _ icns: URL) throws -> URL {
     let fm = FileManager.default
     let td = fm.temporaryDirectory.appendingPathComponent("dg-icns-\(UUID().uuidString)")
     let iconset = td.appendingPathComponent("icon.iconset")
@@ -34,7 +36,10 @@ func pngToIcns(_ png: URL, _ icns: URL) -> URL {
 
     try? fm.createDirectory(at: icns.deletingLastPathComponent(),
                             withIntermediateDirectories: true)
-    run("/usr/bin/iconutil", ["-c", "icns", iconset.path, "-o", icns.path])
+    let r = run("/usr/bin/iconutil", ["-c", "icns", iconset.path, "-o", icns.path])
     try? fm.removeItem(at: td)   // 对应 Python 的 TemporaryDirectory 自动清理
+    guard r.ok, fm.fileExists(atPath: icns.path) else {
+        throw DgError("iconutil 打包 .icns 失败：\(icns.path)\n\(r.errText)")
+    }
     return icns
 }

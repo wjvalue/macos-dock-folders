@@ -68,7 +68,7 @@ func cmdLayout(_ cfg: JSONObject, _ args: [String]) {
         var gs = cfg.groups
         for i in gs.indices { gs[i]["layout"] = nil }
         cfg.groups = gs
-        try? saveConfig(cfg)
+        saveConfigOrDie(cfg)
         names = cfg.groups.map(\.name)
         print("全部 \(names.count) 个分组 → \(mode)")
     } else {
@@ -80,7 +80,7 @@ func cmdLayout(_ cfg: JSONObject, _ args: [String]) {
         var gs = cfg.groups
         if let i = gs.firstIndex(where: { $0.name == g.name }) { gs[i] = g }
         cfg.groups = gs
-        try? saveConfig(cfg)
+        saveConfigOrDie(cfg)
         names = [g.name]
         print("「\(g.name)」→ \(mode)")
     }

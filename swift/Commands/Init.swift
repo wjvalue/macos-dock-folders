@@ -38,7 +38,7 @@ func cmdInit(_ args: [String]) {
             ("apps", .array(apps.prefix(4).map { .string($0) })),
         ])),
     ])
-    try? saveConfig(cfg)
+    saveConfigOrDie(cfg)
 
     print("已生成 \(CONFIG_PATH.path)")
     print()

@@ -53,7 +53,7 @@ func addApps(_ cfg: inout JSONObject, _ g: JSONObject, _ paths: [URL]) -> Int {
         gs[i]["apps"] = .array(apps.map { .string($0) })
         cfg.groups = gs
     }
-    try? saveConfig(cfg)
+    saveConfigOrDie(cfg)
 
     refreshGroups(cfg, names: [gname], quiet: true)
     return todo.count

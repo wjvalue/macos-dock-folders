@@ -47,7 +47,7 @@ func interactiveNew(_ cfg: inout JSONObject) {
     var gs = cfg.groups
     gs.append(g)
     cfg.groups = gs
-    try? saveConfig(cfg)
+    saveConfigOrDie(cfg)
     print("\n已添加分组「\(name)」")
 
     if confirm("直接写进 Dock（自动折叠原图标）？") {
@@ -99,7 +99,7 @@ func cmdNew(_ cfg0: JSONObject, _ args: [String]) {
         ("apps", .array(paths.map { .string($0.path) })),
     ]))
     cfg.groups = gs
-    try? saveConfig(cfg)
+    saveConfigOrDie(cfg)
     print("已添加分组「\(gname)」（\(paths.count) 个 App）：")
     for p in paths {
         print("  · \(p.path)")

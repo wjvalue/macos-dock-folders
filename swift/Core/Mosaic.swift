@@ -445,6 +445,9 @@ func loadBitmap(_ path: String, target: Int) -> Bitmap? {
     guard let img = NSImage(contentsOfFile: path),
           let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
     let w = cg.width, h = cg.height
+    // 位图缓冲按 w 分配（Bitmap(size: w)），非正方形源图会数组越界 —— 当前的
+    // 输入全是方形 App 图标，但用户手放的图不保证；先挡下来不及崩。（2026-09-29 加）
+    guard w == h, w > 0 else { return nil }
     var buf = [UInt8](repeating: 0, count: w * h * 4)
     buf.withUnsafeMutableBytes { raw in
         // ⚠️ 色彩空间必须用**源图自己的**，不能写死 DeviceRGB。
@@ -511,7 +514,17 @@ func writePNG(_ img: CGImage, to path: String) {
 @discardableResult
 func makeMosaic(_ icons: [String], out: String, size S: Int = 1024,
                 style: String = DEFAULT_STYLE) -> String {
-    let st = STYLES[style] ?? STYLES[DEFAULT_STYLE]!
+    let st: Style
+    if let s = STYLES[style] {
+        st = s
+    } else {
+        // 拼错的 style 静默回退默认的话，用户只会看到「配置不生效」，无从排查。
+        FileHandle.standardError.write((
+            "⚠️ 没有「\(style)」这个风格，回退默认「\(DEFAULT_STYLE)」。可选："
+            + STYLES.keys.sorted { pyLess($0, $1) }.joined(separator: "、") + "\n"
+        ).data(using: .utf8)!)
+        st = STYLES[DEFAULT_STYLE]!
+    }
     var canvas = panelBase(S: S, st: st, insetRatio: TILE_INSET)
     let inset = Int(Double(S) * TILE_INSET)
     let side = S - 2 * inset

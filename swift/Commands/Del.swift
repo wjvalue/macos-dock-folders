@@ -92,7 +92,7 @@ func cmdDel(_ cfg0: JSONObject, _ args: [String]) {
         gs[i]["apps"] = .array(kept.map { .string($0) })
         cfg.groups = gs
     }
-    try? saveConfig(cfg)
+    saveConfigOrDie(cfg)
 
     refreshGroups(cfg, names: [gname], quiet: true)
     let left = readFolderApps(folder).count

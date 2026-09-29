@@ -409,7 +409,10 @@ def kill_launchers() -> bool:
     """
     if dock_plist_override() is not None:
         return False
-    r = sh(["pkill", "-f", "DockGroupLauncher"])
+    # -x 精确按进程名匹配，别用 -f：那是完整命令行子串匹配，参数里恰好含
+    # 「DockGroupLauncher」的无辜进程（编辑器开着这个文件、grep 等）会被误杀。
+    # （2026-09-29 改；Swift 版 killLaunchers 同款。）
+    r = sh(["pkill", "-x", "DockGroupLauncher"])
     if r.returncode == 0:
         time.sleep(0.4)
         return True

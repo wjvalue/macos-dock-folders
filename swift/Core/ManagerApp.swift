@@ -154,18 +154,36 @@ func buildManagerApp(force: Bool = false) -> URL {
         || stampOld != digest
 
     if needRebuild {
-        try? fm.createDirectory(at: exe.deletingLastPathComponent(),
-                                withIntermediateDirectories: true)
-        try? fm.createDirectory(at: icon.deletingLastPathComponent(),
-                                withIntermediateDirectories: true)
-        try? fm.removeItem(at: exe)
-        try? fm.copyItem(at: binary, to: exe)
+        // 与 buildLauncherApp 同规则：这一段不许 try?，磁盘满 / 权限失败时
+        // 静默产出坏 bundle 还当构建成功。（2026-09-29 改。）
+        do {
+            try fm.createDirectory(at: exe.deletingLastPathComponent(),
+                                   withIntermediateDirectories: true)
+            try fm.createDirectory(at: icon.deletingLastPathComponent(),
+                                   withIntermediateDirectories: true)
+            if fm.fileExists(atPath: exe.path) {
+                try fm.removeItem(at: exe)   // 首次构建时 exe 还不存在，跳过
+            }
+            try fm.copyItem(at: binary, to: exe)
+        } catch {
+            fatal("重建管理窗口 App 失败：\(error.localizedDescription)")
+        }
         run("/bin/chmod", ["755", exe.path])
-        pngToIcns(iconPng, icon)
-        try? PlistValue.dict(plist).xmlData().write(to: info, options: .atomic)
+        do {
+            try pngToIcns(iconPng, icon)
+            try PlistValue.dict(plist).xmlData().write(to: info, options: .atomic)
+        } catch let e as DgError {
+            fatal(e.message)
+        } catch {
+            fatal("写管理窗口 Info.plist 失败：\(error.localizedDescription)")
+        }
 
         let codesign = which("codesign") ?? "/usr/bin/codesign"
-        run(codesign, ["--force", "--sign", "-", app.path])
+        let cs = run(codesign, ["--force", "--sign", "-", app.path])
+        if !cs.ok {
+            FileHandle.standardError.write(
+                "⚠️ DockGroup.app codesign 失败（退出码 \(cs.status)）：\n\(cs.errText)\n".data(using: .utf8)!)
+        }
         try? digest.write(to: stamp, atomically: true, encoding: .utf8)
         if fm.fileExists(atPath: LSREGISTER) {
             run(LSREGISTER, ["-f", app.path])
