@@ -1332,8 +1332,21 @@ def dock_write(pl: dict, rebuilt: bool = False, finder_restart: bool = True):
         dock_plist_override().write_bytes(data)
         _dock_cache = pl
         return
+    # 备份**写之前**的当前状态 —— restore 的承诺是「回到出事前的样子」。
+    # （2026-09-29 修，与 Swift 版 dockWrite 同规则：旧实现备份的是将要写入的
+    # 新配置，写坏了 restore 回来的还是坏的那份，回滚名存实亡。）
+    # 备份读不出来就中止写入：没退路的全量替换不值得冒险。
+    # 文件名带毫秒（同一秒两次写入不互相覆盖），tmp+replace 防半截文件。
+    cur = subprocess.run(["defaults", "export", DOCK_DOMAIN, "-"], capture_output=True)
+    if cur.returncode != 0 or not cur.stdout:
+        sys.exit("备份失败：读不到当前 Dock 配置，已中止写入（不冒没有退路的险）")
     BACKUP.mkdir(parents=True, exist_ok=True)
-    (BACKUP / f"com.apple.dock-{datetime.now():%Y%m%d-%H%M%S}.plist").write_bytes(data)
+    now = datetime.now()
+    stamp = now.strftime("%Y%m%d-%H%M%S-") + f"{now.microsecond // 1000:03d}"
+    bak = BACKUP / f"com.apple.dock-{stamp}.plist"
+    _tmp = bak.with_name(bak.name + ".tmp")
+    _tmp.write_bytes(cur.stdout)
+    os.replace(_tmp, bak)
     subprocess.run(["defaults", "import", DOCK_DOMAIN, "-"], input=data, check=True)
     _dock_cache = pl
     sh(["killall", "Dock"])
@@ -1505,13 +1518,17 @@ def dock_sync(cfg, only=None, prune=True, rebuilt=False):
     # 旧版每次 apply 都把所有配了 after 的分组拽回锚点，是「手动排序被重置」的
     # 另一半元凶（每个分组默认都带 after）。现在：分组已经在 Dock 上的，用户拖
     # 到哪就是哪；想重新按 after 落位，先 remove 再 apply。
+    #
+    # ⚠️ right 分组必须操作 right 数组：此前一律动 left，首次落位的 right 分组
+    # 会被插进左侧 App 区，同一个图标在 Dock 左右各出现一份。（2026-09-29 修。）
     for g in targets:
         if g["name"] in replaced_in_place:
             continue
         if not g.get("after"):
             continue
-        left[:] = [t for t in left if tile_label(t) != g["name"]]
-        _insert_after(left, tile_for(g), g["after"])
+        side = right if g.get("placement", "left") == "right" else left
+        side[:] = [t for t in side if tile_label(t) != g["name"]]
+        _insert_after(side, tile_for(g), g["after"])
 
     pl["persistent-apps"] = left
     pl["persistent-others"] = right
@@ -1523,8 +1540,12 @@ def dock_sync(cfg, only=None, prune=True, rebuilt=False):
 
 def dock_remove(names):
     pl = dock_read()
-    pl["persistent-others"] = [t for t in pl.get("persistent-others", [])
-                               if tile_label(t) not in set(names)]
+    victims = set(names)
+    # ⚠️ 两个区都要摘：左侧启动器 tile 在 persistent-apps，右侧文件夹 Stack 在
+    # persistent-others —— 只摘右边的话，remove 之后左侧磁贴原地不动，
+    # 命令却照常打印「已从 Dock 移除」。（2026-09-29 修；Swift 版 dockRemove 同款。）
+    for key in ("persistent-apps", "persistent-others"):
+        pl[key] = [t for t in pl.get(key, []) if tile_label(t) not in victims]
     dock_write(pl)
 
 
@@ -2553,9 +2574,12 @@ def cmd_watch_install(cfg, args):
     }))
     domain = f"gui/{uid()}"
     if override is None:
-        subprocess.run(f"launchctl bootout {domain} {agent} >/dev/null 2>&1", shell=True)
-        r = subprocess.run(f"launchctl bootstrap {domain} {agent}",
-                           shell=True, capture_output=True, text=True)
+        # exec 式调用（list 形式），别拿 shell=True 拼 f-string：HOME 带空格时
+        # 整条命令就碎了。（2026-09-29 修；Swift 侧 Watch.swift 同款。）
+        subprocess.run(["launchctl", "bootout", domain, str(agent)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        r = subprocess.run(["launchctl", "bootstrap", domain, str(agent)],
+                           capture_output=True, text=True)
     else:
         r = None
     if r is not None and r.returncode == 0:
@@ -2572,7 +2596,7 @@ def cmd_watch_uninstall(cfg, args):
     override = dock_plist_override()
     agent = (override.parent / "watch-test.plist") if override is not None else AGENT_PLIST
     if override is None:
-        subprocess.run(f"launchctl bootout gui/{uid()} {AGENT_PLIST}", shell=True,
+        subprocess.run(["launchctl", "bootout", f"gui/{uid()}", str(AGENT_PLIST)],
                        capture_output=True, text=True)
     agent.unlink(missing_ok=True)
     print("自动监听已卸载")

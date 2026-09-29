@@ -49,13 +49,39 @@ func run(_ path: String, _ args: [String] = [], input: Data? = nil,
     }
 
     if let ip = inPipe, let data = input {
-        ip.fileHandleForWriting.write(data)
-        ip.fileHandleForWriting.closeFile()
+        // 输入走后台线程 + 裸 write(2)：子进程可能提前退出（比如 defaults import
+        // 拒绝输入），往断掉的管道写会 EPIPE —— FileHandle.write 会抛 ObjC 异常
+        // （Swift 接不住，整个进程崩），裸 write 只返回 -1，随它去。
+        // Python 的 subprocess.communicate 在另一条线程里干的就是这件事；
+        // CPython 启动时就 SIG_IGN 了 SIGPIPE，这里对齐。
+        DispatchQueue.global().async {
+            signal(SIGPIPE, SIG_IGN)
+            data.withUnsafeBytes { (buf: UnsafeRawBufferPointer) in
+                guard var ptr = buf.baseAddress else { return }
+                var remaining = buf.count
+                while remaining > 0 {
+                    let n = write(ip.fileHandleForWriting.fileDescriptor, ptr, remaining)
+                    if n <= 0 { break }   // EPIPE / EBADF：子进程先走了，随它去
+                    ptr += n
+                    remaining -= n
+                }
+            }
+            try? ip.fileHandleForWriting.close()
+        }
     }
 
-    // 先读干净再等退出，避免管道写满导致死锁
-    let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-    let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+    // ⚠️ 两条管道必须**并发**排水，不能串行：父进程卡在等 stdout EOF 时，子进程
+    // 若已把 stderr 写满 64KB 管道缓冲（swiftc 对坏源码的诊断动辄几 MB）就会被
+    // 写阻塞 —— 子进程不退出、stdout 永不 EOF，整条命令挂死。（2026-09-29 修：
+    // 原来是先读 stdout 再读 stderr 的串行 readDataToEndOfFile。）
+    let group = DispatchGroup()
+    let drain = DispatchQueue(label: "local.dockgroup.sh-drain", attributes: .concurrent)
+    var outData = Data(), errData = Data()
+    group.enter()
+    drain.async { outData = outPipe.fileHandleForReading.readDataToEndOfFile(); group.leave() }
+    group.enter()
+    drain.async { errData = errPipe.fileHandleForReading.readDataToEndOfFile(); group.leave() }
+    group.wait()
     p.waitUntilExit()
     return ProcResult(status: p.terminationStatus, out: outData, err: errData)
 }

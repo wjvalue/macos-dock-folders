@@ -4,7 +4,8 @@
 // _targets / _insert_after / dock_sync / dock_remove。
 //
 // 这是整个工具里**唯一会改动用户 Dock** 的地方，也是最该小心的一段：
-// 写之前一定留备份（`~/Dock Groups/.backup/`），出问题能 restore 回滚。
+// 写之前一定留备份（`~/Dock Groups/.backup/`，内容是**改动前**的配置），
+// 出问题能 restore 回滚。
 
 import Foundation
 
@@ -89,9 +90,18 @@ func dockWrite(_ pl: [String: Any], rebuiltHint: Bool = false,
         return
     }
 
+    // 备份**写之前**的当前状态 —— restore 的承诺是「回到出事前的样子」。
+    // （2026-09-29 修：旧实现备份的是将要写入的新配置，写坏了 restore 回来的
+    // 还是坏的那份，回滚名存实亡。）备份读不出来就中止写入：没退路的全量替换
+    // 不值得冒险。文件名带毫秒 —— 同一秒内两次写入不再互相覆盖；.atomic 防半截。
+    let cur = run("/usr/bin/defaults", ["export", DOCK_DOMAIN, "-"])
+    guard cur.ok, !cur.out.isEmpty else {
+        throw DgError("备份失败：读不到当前 Dock 配置，已中止写入（不冒没有退路的险）")
+    }
     try FileManager.default.createDirectory(at: BACKUP, withIntermediateDirectories: true)
     let stamp = DateFormatter.pythonStamp.string(from: Date())
-    try data.write(to: BACKUP.appendingPathComponent("com.apple.dock-\(stamp).plist"))
+    try cur.out.write(to: BACKUP.appendingPathComponent("com.apple.dock-\(stamp).plist"),
+                      options: .atomic)
 
     let r = run("/usr/bin/defaults", ["import", DOCK_DOMAIN, "-"], input: data)
     guard r.ok else {
@@ -108,12 +118,13 @@ func dockWrite(_ pl: [String: Any], rebuiltHint: Bool = false,
 }
 
 private extension DateFormatter {
-    /// `datetime.now():%Y%m%d-%H%M%S` —— 备份文件名的格式。
+    /// 备份文件名的格式：`datetime.now():%Y%m%d-%H%M%S` + 毫秒（同一秒两次写入
+    /// 不互相覆盖；restore 只按前缀/后缀过滤、按名字排序取最新，毫秒位兼容）。
     /// 锁 en_US_POSIX：否则某些区域设置下会输出佛历 / 和历年份，文件名就没法看了。
     static let pythonStamp: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "yyyyMMdd-HHmmss"
+        f.dateFormat = "yyyyMMdd-HHmmss-SSS"
         return f
     }()
 }
@@ -290,10 +301,18 @@ func dockSync(_ cfg: JSONObject, only: Set<String>? = nil, prune: Bool = true,
     // 旧版每次 apply 都把所有配了 after 的分组拽回锚点，是「手动排序被重置」的
     // 另一半元凶（每个分组默认都带 after）。现在：分组已经在 Dock 上的，用户拖
     // 到哪就是哪；想重新按 after 落位，先 `dg remove` 再 apply。
+    //
+    // ⚠️ right 分组必须操作 right 数组：此前一律动 left，首次落位的 right 分组
+    // 会被插进左侧 App 区，同一个图标在 Dock 左右各出现一份。（2026-09-29 修。）
     for g in tg where !replacedInPlace.contains(g.name) {
         guard let anchor = g["after"]?.stringValue, !anchor.isEmpty else { continue }
-        left.removeAll { tileLabel($0) == g.name }
-        insertAfter(&left, tileFor(g), anchor: anchor)
+        if g.placement == "right" {
+            right.removeAll { tileLabel($0) == g.name }
+            insertAfter(&right, tileFor(g), anchor: anchor)
+        } else {
+            left.removeAll { tileLabel($0) == g.name }
+            insertAfter(&left, tileFor(g), anchor: anchor)
+        }
     }
 
     var out = pl
@@ -309,9 +328,14 @@ func dockSync(_ cfg: JSONObject, only: Set<String>? = nil, prune: Bool = true,
 func dockRemove(_ names: [String]) throws {
     var pl = dockRead()
     let victims = Set(names)
-    pl["persistent-others"] = (pl["persistent-others"] as? [[String: Any]] ?? []).filter {
-        guard let l = tileLabel($0) else { return true }
-        return !victims.contains(l)
+    // ⚠️ 两个区都要摘：左侧启动器 tile 在 persistent-apps，右侧文件夹 Stack 在
+    // persistent-others —— 只摘右边的话，remove 之后左侧磁贴原地不动，
+    // 命令却照常打印「已从 Dock 移除」。（2026-09-29 修；Python 侧同款。）
+    for key in ["persistent-apps", "persistent-others"] {
+        pl[key] = (pl[key] as? [[String: Any]] ?? []).filter {
+            guard let l = tileLabel($0) else { return true }
+            return !victims.contains(l)
+        }
     }
     try dockWrite(pl)
 }

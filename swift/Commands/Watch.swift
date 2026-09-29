@@ -59,14 +59,16 @@ func cmdWatchInstall(_ cfg: JSONObject, _ args: [String]) {
         exit(1)
     }
     let domain = "gui/\(getuid())"
-    // Python: bootout 静默，bootstrap 带输出；测试模式直接走「没权限」分支
+    // Python: bootout 静默，bootstrap 带输出；测试模式直接走「没权限」分支。
+    // exec 式调用，不走 sh -c 拼：路径含空格时拼出来的命令就碎了（全项目唯一
+    // 一处字符串拼 shell 的地方，2026-09-29 拔掉；Python 侧改 list 形式同款）。
     if dockPlistOverride != nil {
         print("已写入 \(agent.path)")
         print("但当前进程没有 launchd 权限，无法自动加载。请在你自己的「终端」里执行一次：")
         print("  launchctl bootstrap \(domain) \(agent.path)")
     } else {
-        _ = run("/bin/sh", ["-c", "launchctl bootout \(domain) \(agent.path) >/dev/null 2>&1"])
-        let r = run("/bin/sh", ["-c", "launchctl bootstrap \(domain) \(agent.path)"])
+        _ = run("/bin/launchctl", ["bootout", domain, agent.path])
+        let r = run("/bin/launchctl", ["bootstrap", domain, agent.path])
         if r.status == 0 {
             print("已写入并启用 \(agent.path)")
             print("自动监听生效：往分组文件夹里加/删 App，图标会自动更新。")
@@ -82,7 +84,7 @@ func cmdWatchInstall(_ cfg: JSONObject, _ args: [String]) {
 func cmdWatchUninstall(_ cfg: JSONObject, _ args: [String]) {
     let agent = agentPlistURL()
     if dockPlistOverride == nil {
-        _ = run("/bin/sh", ["-c", "launchctl bootout gui/\(getuid()) \(agent.path)"])
+        _ = run("/bin/launchctl", ["bootout", "gui/\(getuid())", agent.path])
     }
     try? FileManager.default.removeItem(at: agent)   // Python unlink(missing_ok=True)
     print("自动监听已卸载")
