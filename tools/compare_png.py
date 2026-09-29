@@ -41,6 +41,10 @@ def main():
         sys.exit(__doc__)
     pa, pb = Path(sys.argv[1]), Path(sys.argv[2])
     prefix = sys.argv[3] if len(sys.argv) > 3 else "/tmp/cmp"
+    # 防呆：前缀以 - 开头说明参数顺序敲错了 —— 照跑的话会在当前目录生成
+    # 一堆以旗标命名的垃圾 png（仓库根的 --out-diff.png 就是这么来的）。
+    if prefix.startswith("-"):
+        sys.exit(f"❌ 输出前缀不能以 - 开头（像把旗标当成了前缀）：{prefix}")
 
     a = Image.open(pa).convert("RGBA")
     b = Image.open(pb).convert("RGBA")

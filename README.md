@@ -191,6 +191,7 @@ dg test    组名        手动启动一次，验证点击展开效果
 dg logs    组名        查看运行日志（面板几何 + 点击事件轨迹）
 dg remove  组名...     从 Dock 移除（保留文件夹）
 dg clean   组名...     从 Dock 移除并删除文件夹
+dg gui [--rebuild]     打开图形界面（分组管理窗口，改完即时预览）
 dg doctor              体检：检查依赖是否齐全
 dg init [--force]      扫描当前 Dock，生成起始 groups.json
 dg watch-install       安装自动监听：文件夹一变就自动刷新图标
@@ -534,7 +535,7 @@ Dock 支持把文件夹放进去（Stack），但它有个硬限制：
 没有任何 plist 字段能改。
 
 所以要在左侧位置 + 点击展开，只能自己做成 App：`scripts/launcher/main.swift` 会编译出一个
-约 130 KB 的启动器，`LSUIElement=true`（不留运行圆点、不进 Cmd-Tab），点击后在图标正上方
+约 240 KB（单架构）的启动器，`LSUIElement=true`（不留运行圆点、不进 Cmd-Tab），点击后在图标正上方
 弹出一个毛玻璃网格面板。
 
 ### 落盘位置

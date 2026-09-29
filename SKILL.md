@@ -25,9 +25,19 @@ Stack 的弹窗逻辑和 tile 所在区域绑定，**没有任何 plist 字段�
 
 ## 现成工具
 
-本仓库的 `scripts/dockgroup.py`（配置 `~/Dock Groups/groups.json`，可用 `DOCKGROUP_HOME` 覆盖）。
+**引擎优先级（2026-09-22 起 Swift 版是权威实现，20/20 命令已全部迁移）**：
 
-**先装一次短命令**，之后所有操作都用 `dg`，不用再敲长路径：
+1. **预编译分发**（推荐）：Releases 里的 `DockGroup.app` / `prebuilt.zip`，零依赖零编译
+2. **`tools/install.command`**：预编译分支直接装好一切
+3. **Swift 源码构建**：`swift/build.sh`（需要 CLT）
+4. **Python 回退**（`scripts/dockgroup.py`）：仅作对照测试基准与最后兜底。
+   ⚠️ 已知缺口：预编译分发不装 Pillow、Python 侧缺 macOS 26 的图标自愈修复 ——
+   能走上面三条路就别用这条。
+
+本仓库配置在 `~/Dock Groups/groups.json`（可用 `DOCKGROUP_HOME` 覆盖）。
+
+**先装一次短命令**，之后所有操作都用 `dg`，不用再敲长路径。有预编译二进制时
+直接用它（见 `tools/install.command` 预编译分支）；纯源码场景的 Python shim：
 
 ```bash
 mkdir -p ~/.local/bin

@@ -44,7 +44,7 @@ if [ -x "$PREBUILT" ]; then
         cp "$DG" "$DG.python-shim.bak"
         echo "   旧的 Python shim 已备份为 dg.python-shim.bak"
     fi
-    cp "$PREBUILT" "$DG"
+    cp "$PREBUILT" "$DG" || { echo "   ❌ 拷贝 dg 失败（磁盘满 / 权限？），安装中止。" >&2; exit 1; }
     chmod +x "$DG"
     echo "   已安装 → $DG"
     echo "$ROOT" > "$MARKER"
@@ -57,10 +57,15 @@ if [ -x "$PREBUILT" ]; then
     # 源码副本也进缓存：用户之后删掉/挪走安装目录，rebuild 仍能命中缓存
     # 摘要继续跑，不必依赖仓库在场（引擎侧会按 仓库 → 缓存 的顺序找源码）。
     mkdir -p "$CACHE"
-    cp "$ROOT/prebuilt/DockGroupLauncher.bin" "$CACHE/.launcher.bin"
-    cp "$ROOT/prebuilt/DockGroupManager.bin" "$CACHE/.manager.bin"
-    cp "$ROOT/scripts/launcher/main.swift" "$CACHE/.launcher.main.swift"
-    cp "$ROOT/scripts/manager/main.swift" "$CACHE/.manager.main.swift"
+    # 关键步骤失败必须中止：预编译用户的卖点就是「没有 CLT」，拷贝缺一件的话
+    # 后面 gui 现场编译必挂，只会得到残缺安装 + 一串 swiftc 报错。（2026-09-29 加）
+    if ! cp "$ROOT/prebuilt/DockGroupLauncher.bin" "$CACHE/.launcher.bin" \
+       || ! cp "$ROOT/prebuilt/DockGroupManager.bin" "$CACHE/.manager.bin" \
+       || ! cp "$ROOT/scripts/launcher/main.swift" "$CACHE/.launcher.main.swift" \
+       || ! cp "$ROOT/scripts/manager/main.swift" "$CACHE/.manager.main.swift"; then
+        echo "   ❌ 预置缓存失败（磁盘满 / 权限？），安装中止。" >&2
+        exit 1
+    fi
     shasum -a 256 "$ROOT/scripts/launcher/main.swift" | awk '{print $1}' \
         > "$CACHE/.launcher.src-stamp"
     shasum -a 256 "$ROOT/scripts/manager/main.swift" | awk '{print $1}' \

@@ -29,6 +29,15 @@ PY
 fi
 echo "版本：$VERSION"
 
+# 版本守卫：Swift 端 VERSION 没跟着 bump 的话，zip 文件名、Info.plist、
+# `dg --version` 会互相打架 —— bc9efd0 那次事故就是它。（2026-09-29 加）
+SWIFT_VERSION=$(/usr/bin/sed -n 's/^let VERSION = "\(.*\)"$/\1/p' swift/Core/Paths.swift)
+if [ "$VERSION" != "$SWIFT_VERSION" ]; then
+    echo "❌ 版本号两处不一致：scripts/dockgroup.py __version__ = $VERSION，" >&2
+    echo "   swift/Core/Paths.swift VERSION = $SWIFT_VERSION。先同步再发版。" >&2
+    exit 1
+fi
+
 SDK="$(xcrun --sdk macosx --show-sdk-path)"
 OUT="$REPO/build/release"
 rm -rf "$OUT"
@@ -42,10 +51,13 @@ build_one() {  # $1=输出  $2=target  $3...=源文件（其余参数透传给 s
 echo "① 编译 dg（arm64 + x86_64 → universal）"
 # BuildInfo.swift 由 swift/build.sh 的逻辑生成；发布包里烧入的仓库路径只是
 # 兜底，运行时以 ~/.local/bin/.dg-repo-root 标记文件为准（见 Paths.swift）。
-cat > swift/Core/BuildInfo.swift <<EOF
+# heredoc 定界符必须加引号（REPO 含 $/反引号时 shell 展开会毁掉生成文件），
+# 值用 printf 写入 —— 与 swift/build.sh 同款。
+cat > swift/Core/BuildInfo.swift <<'EOF'
 // 由 tools/build-release.sh 生成，别手工改，也别提交。
-let BUILD_REPO_ROOT = "$REPO"
 EOF
+printf 'let BUILD_REPO_ROOT = "%s"\n' "${REPO//\"/\\\"}" >> swift/Core/BuildInfo.swift
+git rev-parse HEAD > "$OUT/.head"   # build-app.sh 复用产物时核对新鲜度用
 for arch in arm64 x86_64; do
     build_one "$OUT/dg-$arch" "$arch-apple-macos12.0" \
         swift/main.swift swift/Core/*.swift swift/Commands/*.swift \

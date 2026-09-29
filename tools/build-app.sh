@@ -36,8 +36,22 @@ PY
 fi
 echo "版本：$VERSION"
 
+# 新鲜度校验（2026-09-29 加）：版本号取自工作树、载荷内容取自 git archive HEAD，
+# 工作树不干净或产物来自旧 HEAD 时会产出「名字与内容错位」的发布资产。
+if git status --porcelain | grep -q .; then
+    echo "❌ 工作树不干净 —— 发版约定「先 commit 再构建」：" >&2
+    echo "   zip 与 .app 载荷取自 git archive HEAD，未提交的改动不会进包。" >&2
+    exit 1
+fi
+
 # ① 先拿预编译产物 + HEAD 源码树（zip 与 .app 载荷同源）
 echo "① 复用 build-release.sh 的产物"
+if [ -x "build/release/prebuilt/dg" ] && [ -d "build/release/dockgroup-$VERSION" ] \
+   && [ -f "build/release/.head" ] \
+   && [ "$(cat build/release/.head)" != "$(git rev-parse HEAD)" ]; then
+    echo "⚠️  build/release 里的产物来自旧 HEAD（源码已变），强制重跑 build-release.sh"
+    rm -rf build/release
+fi
 if [ ! -x "build/release/prebuilt/dg" ] || [ ! -d "build/release/dockgroup-$VERSION" ]; then
     tools/build-release.sh "$VERSION"
 fi
