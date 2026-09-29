@@ -20,16 +20,35 @@ func _dockCacheSet(_ pl: [String: Any]) { _dockCache = pl }
 /// 但那要先验证 cfprefsd 的缓存语义一致，别顺手改。
 ///
 /// 设了 `DOCKGROUP_DOCK_PLIST` 时改读那个文件（对照测试用，见 DockSync.swift）。
+///
+/// ⚠️ 读失败**绝不能**静默降级成空字典：dockSync / dockWrite 是「全量读 → 改 →
+/// 全量 import」，空底稿 + 一条照常执行的 import 会把用户整个 Dock 写成只剩
+/// 分组磁贴。宁可当场响亮失败。（2026-09-29 修：原来的 `?? [:]` 正是这个坑。）
 func dockRead(refresh: Bool = false) -> [String: Any] {
     if let c = _dockCache, !refresh { return c }
 
     let pl: [String: Any]
     if let override = dockPlistOverride {
-        pl = readPlistDict(override) ?? [:]
+        // 替身文件不存在 = 测试从空白 Dock 起步（历史行为，保留）；
+        // 存在但读不出/不是合法 plist = 测试装置坏了，也必须响亮失败。
+        if !FileManager.default.fileExists(atPath: override.path) {
+            pl = [:]
+        } else if let p = readPlistDict(override) {
+            pl = p
+        } else {
+            fatal("读取 Dock 配置失败：替身文件不是合法 plist（\(override.path)）")
+        }
     } else {
-        let data = run("/usr/bin/defaults", ["export", DOCK_DOMAIN, "-"]).out
-        pl = (try? PropertyListSerialization.propertyList(from: data, options: [], format: nil))
-            as? [String: Any] ?? [:]
+        let r = run("/usr/bin/defaults", ["export", DOCK_DOMAIN, "-"])
+        let why = r.errText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard r.ok, !r.out.isEmpty,
+              let p = (try? PropertyListSerialization.propertyList(
+                  from: r.out, options: [], format: nil)) as? [String: Any] else {
+            fatal("读取 Dock 配置失败（defaults export \(DOCK_DOMAIN)）："
+                  + (why.isEmpty ? "输出为空或不是合法 plist" : why)
+                  + "。已中止，不碰 Dock。")
+        }
+        pl = p
     }
     _dockCache = pl
     return pl

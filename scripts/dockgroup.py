@@ -568,6 +568,27 @@ def find_group(cfg, name):
     return next((g for g in cfg["groups"] if g["name"] == name), None)
 
 
+def group_name_problem(name):
+    """校验分组名能不能安全地拿去拼 BASE/<名字> 做删除/创建。违规返回原因，合法返回 None。
+
+    remove / clean 会拿用户输入的分组名直接拼路径删东西：`..`、`.`、带 `/` 的名字
+    会把删除导向 BASE 之外（`clean ..` 曾能删光整个 ~/Dock Groups 含备份）；
+    点开头的名字会撞上内部的 .cache / .backup / .apps。在动手前拦下。
+    （2026-09-29 加；与 Swift 版 groupNameProblem 同规则。）
+    """
+    if not name:
+        return "分组名为空"
+    if name in (".", ".."):
+        return f"分组名不能是「{name}」"
+    if "/" in name or ":" in name:
+        return "分组名不能含 / 或 :"
+    if name.startswith("."):
+        return "分组名不能以 . 开头（会和内部目录冲突）"
+    if name == "groups.json":
+        return "groups.json 是配置文件，不是分组"
+    return None
+
+
 # ─────────────────────────────────────────────────────────── 图标提取与合成
 
 def _icon_cache(app: Path):
@@ -2475,6 +2496,10 @@ def cmd_open(cfg, args):
 def cmd_remove(cfg, args):
     if not args:
         sys.exit("请指定要移除的分组名")
+    for n in args:
+        why = group_name_problem(n)
+        if why:
+            sys.exit(f"「{n}」：{why}")
     dock_remove(args)
     print(f"已从 Dock 移除：{', '.join(args)}（文件夹保留）")
 
@@ -2482,9 +2507,18 @@ def cmd_remove(cfg, args):
 def cmd_clean(cfg, args):
     if not args:
         sys.exit("请指定要清理的分组名")
+    for n in args:
+        why = group_name_problem(n)
+        if why:
+            sys.exit(f"「{n}」：{why}")
     dock_remove(args)
     for n in args:
-        f = BASE / n
+        f = (BASE / n).resolve()
+        # 围栏（名字校验之外的第二道保险）：resolve 后必须是 BASE 的直接子路径。
+        # 删除是这里最不能出错的一步，宁可多防一层。（2026-09-29 加；
+        # 此前 `clean ..` / 绝对路径会直接 rmtree 到 BASE 之外。）
+        if f.parent != BASE.resolve():
+            sys.exit(f"拒绝删除「{n}」：解析后的路径不在 {BASE} 里")
         if f.exists():
             shutil.rmtree(f)
     print(f"已从 Dock 移除并删除文件夹：{', '.join(args)}")

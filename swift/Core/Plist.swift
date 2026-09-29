@@ -140,7 +140,10 @@ func plistValue(from any: Any, path: String = "", badPath: inout String?) -> Pli
         // 但它的 stringValue 未必带 ".0"）。
         if CFGetTypeID(n) == CFBooleanGetTypeID() { return .bool(n.boolValue) }
         if CFNumberIsFloatType(n) { return .real(n.doubleValue) }
-        return .integer(n.intValue)
+        // ⚠️ 必须 int64：intValue 是 Int32，Dock 配置里的 file-mod-date 等
+        // 时间戳是 48+ 位 —— 按 32 位截断，每次全量回写都在篡改用户配置
+        // （2026-09-29 修）。`Int` 在 64 位平台 == Int64，`.integer` 装得下。
+        return .integer(Int(n.int64Value))
     case let d as Data:    return .data(d)
     case let n as Int:     return .integer(n)
     case let d as Double:  return .real(d)

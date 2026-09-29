@@ -17,6 +17,21 @@ func folderEntries(_ folder: URL) -> [URL] {
     }
 }
 
+/// 校验分组名能不能安全地拿去拼 `BASE/<名字>` 做删除/创建。违规返回原因，合法返回 nil。
+///
+/// remove / clean 会拿用户输入的分组名直接拼路径删东西：`..`、`.`、带 `/` 的名字
+/// 会把删除导向 BASE 之外（`clean ..` 曾能删光整个 ~/Dock Groups 含备份）；
+/// 点开头的名字会撞上内部的 .cache / .backup / .apps。在动手前拦下。
+/// （2026-09-29 加；与 Python 版 group_name_problem 同规则。）
+func groupNameProblem(_ name: String) -> String? {
+    if name.isEmpty { return "分组名为空" }
+    if name == "." || name == ".." { return "分组名不能是「\(name)」" }
+    if name.contains("/") || name.contains(":") { return "分组名不能含 / 或 :" }
+    if name.hasPrefix(".") { return "分组名不能以 . 开头（会和内部目录冲突）" }
+    if name == "groups.json" { return "groups.json 是配置文件，不是分组" }
+    return nil
+}
+
 /// 批量建 Finder **真别名**（不是符号链接）。
 /// 对应 Python 的 JXA "mkalias"。做真别名是因为 Dock 和 Finder 对别名与符号链接
 /// 的处理不同，而分组文件夹里放的是 App 的替身，得和用户在 Finder 里自己拖出来的

@@ -18,10 +18,21 @@ let DEFAULT_MATERIAL = "hud"
 let DEFAULT_LAYOUT = "row"
 
 /// 读配置。
+///
+/// ⚠️ 「文件存在但读不出/解析不了」必须响亮失败：静默按「无分组」继续的话，
+/// 任何会 saveConfig 的命令（new / add / style / layout / del）都会把这份
+/// **只是语法坏了、本可手工救回**的配置直接覆盖掉。（2026-09-29 修。）
+/// 文件不存在 → 返回默认空配置（首次运行），保持原行为。
 func loadConfig() -> JSONObject {
     for url in [CONFIG_PATH, FALLBACK_CONFIG_PATH] {
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
-        if case .object(let o)? = parseJSON(text) { return o }
+        if !FileManager.default.fileExists(atPath: url.path) { continue }
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+            fatal("配置文件读不出来（编码不是 UTF-8？）：\(url.path)")
+        }
+        guard case .object(let o)? = parseJSON(text) else {
+            fatal("配置文件不是合法 JSON（手工改坏了？先修好它再跑）：\(url.path)")
+        }
+        return o
     }
     return JSONObject([("groups", .array([]))])
 }
@@ -32,6 +43,20 @@ func saveConfig(_ cfg: JSONObject) throws {
                                             withIntermediateDirectories: true)
     try (JSONValue.object(cfg).serialized() + "\n")
         .write(to: CONFIG_PATH, atomically: true, encoding: .utf8)
+}
+
+/// 写配置，失败当场终止。
+///
+/// 为什么必须有这个变体：配置落盘失败（权限、磁盘满）而命令照常报成功，
+/// Dock 的状态和 groups.json 就此分叉 —— 下一轮操作又基于旧配置回写，
+/// 用户看到的是「改了又自己变回去」。 Dock 状态已经跟着内存里的新配置走了，
+/// 配置没落盘是最不该静默的一种失败。（2026-09-29 收敛：9 处 `try? saveConfig`。）
+func saveConfigOrDie(_ cfg: JSONObject) {
+    do {
+        try saveConfig(cfg)
+    } catch {
+        fatal("写配置失败（\(CONFIG_PATH.path)）：\(error.localizedDescription)")
+    }
 }
 
 // ─────────────────────────────────────────────── 访问器
