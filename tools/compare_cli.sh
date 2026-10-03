@@ -23,7 +23,7 @@ PY=/usr/bin/python3
 SW="$REPO/build/dg-swift"
 TMPHOME=/tmp/cmpcli-home
 PX=/tmp/cmpcli-px
-ICONS="$HOME/Dock Groups/.cache/app-icons"
+ICONS="$HOME/Library/Application Support/DockGroup/data/.cache/app-icons"
 PIXEL_MAX=1.0
 
 # 锚死 Swift 引擎的仓库根。不设的话 `~/.local/bin/.dg-repo-root` 标记文件
@@ -368,8 +368,17 @@ for a in apps:
     if p: shutil.copy(p, Path('$PX/py') / (a.stem + '.png'))
 " >/dev/null 2>&1
     DOCKGROUP_HOME="$PX/home-sw" "$SW" __grab-icons "$PX/sw" "${apps[0]}" "${apps[1]}" >/dev/null 2>&1
-    for f in "$PX/py"/*.png; do
-        [ -f "$f" ] || continue
+    # Python 侧一个 PNG 都没产出时这个循环会零次执行 —— 该节从统计里凭空消失，
+    # 总数变少没人察觉。空产出按失败计。（2026-10-03 修。）
+    shopt -s nullglob
+    py_pngs=("$PX/py"/*.png)
+    shopt -u nullglob
+    if [ ${#py_pngs[@]} -eq 0 ]; then
+        printf "  ❌ %-30s Python 侧一个图标都没产出\n" "图标提取"
+        fail=$((fail + 1))
+        return
+    fi
+    for f in "${py_pngs[@]}"; do
         n=$(basename "$f")
         [ -f "$PX/sw/$n" ] && pixel_report "图标提取：$n" "$f" "$PX/sw/$n" \
                            || { printf "  ❌ %-30s Swift 侧没产出\n" "图标提取：$n"; fail=$((fail + 1)); }
@@ -492,10 +501,22 @@ dock_sync(load_config(), only=None, prune=os.environ['PYPRUNE'] == 'True')
         "$SW" __dock-sync $extra > "$B" 2>&1
     local rb=$?
 
-    if cmp -s "$T/py.plist" "$T/sw.plist"; then
+    # ⚠️ 判定必须先看退出码：输出文件开头就被预填了样本字节，两侧引擎若都在
+    # 写出前崩溃，剩下的两份文件仍然逐字节相同 —— 只比字节的话这道「最该被
+    # 测死」的关卡会假绿（2026-10-03 修）。同样，「输出 = 输入样本」说明两侧
+    # 都没写出（配置无变化不该发生：fixture 的 config 一定插得进 tile），也判失败。
+    if [ "$ra" -ne 0 ] || [ "$rb" -ne 0 ]; then
+        printf "  ❌ %-30s 引擎退出码非零（py=%s sw=%s）\n" "$label" "$ra" "$rb"
+        diff "$T/py.plist" "$T/sw.plist" 2>&1 | head -20 | sed 's/^/     /'
+        fail=$((fail + 1))
+    elif cmp -s "$T/py.plist" "$T/sw.plist" \
+         && ! cmp -s "$T/py.plist" "$T/dock.plist"; then
         printf "  ✅ %-30s %6d 字节  退出码 %s\n" "$label" \
                "$(wc -c < "$T/py.plist" | tr -d ' ')" "$ra"
         pass=$((pass + 1))
+    elif cmp -s "$T/py.plist" "$T/sw.plist"; then
+        printf "  ❌ %-30s 输出与输入样本相同（两侧都没写出？）\n" "$label"
+        fail=$((fail + 1))
     else
         printf "  ❌ %-30s\n" "$label"
         echo "     python 退出码 $ra ／ swift 退出码 $rb"

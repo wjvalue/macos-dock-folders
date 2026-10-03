@@ -43,6 +43,11 @@ private func mdfindApp(_ needle: String) -> URL? {
 
 /// 把 'Google Chrome' / 'chrome' / 'Safari' / '系统设置' / 完整路径 解析成 App 路径。
 func resolveApp(_ spec: String) -> URL? {
+    // 空串／纯空白直接判「找不到」：模糊匹配的 contains 对空串恒真，会命中
+    // 字母序第一个 App（Python 侧 resolve_app 同款守卫）。必须放在最前 ——
+    // Python 的 Path("").exists() 是 True，这里 fileExists("") 虽是 false，
+    // 两边统一在最前面拦。（2026-10-03 修。）
+    guard !spec.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
     let fm = FileManager.default
     let expanded = (spec as NSString).expandingTildeInPath
     if fm.fileExists(atPath: expanded) {

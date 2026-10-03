@@ -511,6 +511,11 @@ final class ItemView: NSView {
 // ─── 主逻辑 ────────────────────────────────────────────────
 final class Delegate: NSObject, NSApplicationDelegate {
     private var panel: LauncherPanel?
+    /// 当前网格使用的成员快照 —— 就是最后一次 buildPanel 收到的那份列表。
+    /// pick 必须用它：网格下标和标题都来自这份快照，现读文件夹的话，
+    /// 常驻期间（空闲 10 分钟窗口）文件夹一被增删/改名，点显示的 A 会
+    /// 启动排序变化后的 B（2026-10-03 修）。
+    private var panelEntries: [Entry] = []
     private var shown = false
     private var leaving = false
     private var idleTimer: Timer?
@@ -528,7 +533,7 @@ final class Delegate: NSObject, NSApplicationDelegate {
     }
     private var logDir: String {
         (Bundle.main.object(forInfoDictionaryKey: "DockGroupLogDir") as? String)
-            ?? (NSHomeDirectory() + "/Dock Groups/.cache")
+            ?? (NSHomeDirectory() + "/Library/Application Support/DockGroup/data/.cache")
     }
     private var materialName: String {
         (Bundle.main.object(forInfoDictionaryKey: "DockGroupMaterial") as? String) ?? "menu"
@@ -652,7 +657,12 @@ final class Delegate: NSObject, NSApplicationDelegate {
             hidePanel()
         } else {
             trace("reopen -> toggle open")
-            showPanel(entries: Self.readEntries(folder: folderPath).count)
+            // 展开前重建网格：常驻期间文件夹可能被增删/改名，直接 showPanel
+            // 的话显示的还是旧快照。重建保证「显示内容」和 pick 的「启动目标」
+            // 永远是同一份列表（panelEntries）。
+            let entries = Self.readEntries(folder: folderPath)
+            buildPanel(entries)
+            showPanel(entries: entries.count)
         }
         return true
     }
@@ -694,11 +704,20 @@ final class Delegate: NSObject, NSApplicationDelegate {
         pendingDrops.removeAll()
         guard !paths.isEmpty else { return }
 
-        // 同一批路径短期内重复到达 → 丢掉
+        // 同一批路径短期内重复到达 → 丢掉。但「整批相同」还不够：用户可能
+        // 在两次拖放之间把别名删了 —— 那时重拖是合法操作，必须放行。
+        // 判据：上一批的成员现在还在文件夹里才算重复。（2026-10-03 修。）
         if paths == lastFlushed.paths,
            Date().timeIntervalSince(lastFlushed.at) < 10 {
-            trace("drop: duplicate batch ignored (same \(paths.count) path(s))")
-            return
+            let entries = Self.readEntries(folder: folderPath)
+            let stillThere = paths.allSatisfy { p in
+                entries.contains { $0.path == p }
+            }
+            if stillThere {
+                trace("drop: duplicate batch ignored (same \(paths.count) path(s))")
+                return
+            }
+            trace("drop: same batch as last flush but entries changed -> allow")
         }
         lastFlushed = (paths, Date())
 
@@ -731,9 +750,15 @@ final class Delegate: NSObject, NSApplicationDelegate {
             trace("add failed to spawn engine: \(error.localizedDescription)")
             return
         }
+        // 先并发排水、再等退出：等 terminationHandler 里才读的话，子进程输出
+        // 一超管道缓冲（64KB）就写阻塞 —— 子进程不退、回调永不触发，拖放
+        // 静默无反馈。（2026-10-03 修；引擎 Sh.swift 的并发排水同款。）
+        let drained = DispatchQueue(label: "local.dockgroup.add-drain")
+        var outData = Data()
+        drained.async { outData = pipe.fileHandleForReading.readDataToEndOfFile() }
         task.terminationHandler = { [weak self] t in
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let out = String(data: data, encoding: .utf8) ?? ""
+            drained.sync {}
+            let out = String(data: outData, encoding: .utf8) ?? ""
             trace("add exit=\(t.terminationStatus) "
                   + "out=\(out.replacingOccurrences(of: "\n", with: " | "))")
             DispatchQueue.main.async { self?.afterAdd(ok: t.terminationStatus == 0) }
@@ -836,6 +861,7 @@ final class Delegate: NSObject, NSApplicationDelegate {
     }
 
     private func buildPanel(_ entries: [Entry]) {
+        panelEntries = entries   // pick 的启动目标以此为准（见 panelEntries 注释）
         // 重建前先把旧面板的失焦回调摘掉再关它 —— 否则那次关闭会触发
         // hidePanel()，把 shown 置 false / 排一个空闲退出，把状态搅乱。
         if let old = resignObserver {
@@ -1029,8 +1055,10 @@ final class Delegate: NSObject, NSApplicationDelegate {
 
     // ── 选中某一项：启动对应 App
     private func pick(_ index: Int) {
-        let entries = Self.readEntries(folder: folderPath)
-        trace("pick index=\(index) entries=\(entries.count)")
+        // 用 buildPanel 时的同一份快照，不许现读文件夹 —— 网格下标和标题
+        // 都来自那份快照，两边必须出自同一列表（见 panelEntries 注释）。
+        let entries = panelEntries
+        trace("pick index=\(index) snapshot=\(entries.count)")
         guard index >= 0, index < entries.count else {
             trace("pick out of range, abort")
             hidePanel()

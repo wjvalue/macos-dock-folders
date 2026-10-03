@@ -10,6 +10,12 @@ func promptGroupName(_ cfg: JSONObject) -> String? {
     while true {
         let name = ask("新分组叫什么名字（如 AI / 工作 / 工具）")
         if name.isEmpty { return nil }
+        // 创建侧也要校验：否则建成 `a/b` / `.x` 这类名字后，remove/clean 会
+        // 按同一条校验拒绝处理它 —— 分组从此删不掉（2026-10-03 修）。
+        if let why = groupNameProblem(name) {
+            print("  「\(name)」：\(why)，换一个")
+            continue
+        }
         if cfg.group(named: name) != nil {
             print("  「\(name)」已存在，换一个")
             continue
@@ -76,6 +82,11 @@ func cmdNew(_ cfg0: JSONObject, _ args: [String]) {
     }
     let gname = positional[0]
     let specs = Array(positional.dropFirst())
+    // 创建侧也要校验（与 remove/clean 同一条规则）：带 / 或 : 、点开头这类名字
+    // 建得成却删不掉 —— remove/clean 会按 groupNameProblem 拒绝处理它。
+    if let why = groupNameProblem(gname) {
+        fatal("「\(gname)」：\(why)")
+    }
     if cfg.group(named: gname) != nil {
         fatal("分组「\(gname)」已存在，改配置或先 remove")
     }

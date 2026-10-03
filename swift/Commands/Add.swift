@@ -36,16 +36,25 @@ func addApps(_ cfg: inout JSONObject, _ g: JSONObject, _ paths: [URL]) -> Int {
         return 0
     }
 
-    makeAliases(in: folder, todo)
-    for p in todo {
+    // 建别名失败要报告、且不能写进配置：吞掉的话这里照样打印「+ App」并写进
+    // groups.json，实际文件夹里没有别名，网格里也不出现。（2026-10-03 修；
+    // Python 侧 _add_apps 同款。）
+    let made = Set(makeAliases(in: folder, todo))
+    for p in todo where made.contains(p.deletingPathExtension().lastPathComponent) {
         print("  + \(p.deletingPathExtension().lastPathComponent)")
+    }
+    let aliasFailed = todo.map { $0.deletingPathExtension().lastPathComponent }
+        .filter { !made.contains($0) }
+    if !aliasFailed.isEmpty {
+        print("  ⚠️ 这些 App 未能建别名（没写进配置）：\(aliasFailed.joined(separator: "、"))")
     }
 
     // 配置里的 apps 列表同步，保证 groups.json 与文件夹一致。
     // 注意 setdefault 语义：键不存在时也要把 "apps": [] 写进 JSON（Python 亦然）。
     var apps = g["apps"]?.stringArray ?? []
     let known = Set((g["apps"]?.stringArray ?? []).map { ($0 as NSString).expandingTildeInPath })
-    for p in todo where !known.contains(p.path) {
+    for p in todo where made.contains(p.deletingPathExtension().lastPathComponent)
+                        && !known.contains(p.path) {
         apps.append(p.path)
     }
     var gs = cfg.groups
@@ -56,7 +65,7 @@ func addApps(_ cfg: inout JSONObject, _ g: JSONObject, _ paths: [URL]) -> Int {
     saveConfigOrDie(cfg)
 
     refreshGroups(cfg, names: [gname], quiet: true)
-    return todo.count
+    return todo.filter { made.contains($0.deletingPathExtension().lastPathComponent) }.count
 }
 
 /// dg add（不带参数）→ 选分组 → 多选 App → 确认 → 自动刷新。

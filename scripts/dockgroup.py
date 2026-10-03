@@ -20,7 +20,7 @@ Dock 只支持把「文件夹」放进去，而且**文件夹的点击弹出网�
   2. 读取每个 App 的原始图标，实时合成一张 2×2 拼贴图标
   3. 把结果以正确的 tile 结构写入 Dock
 
-**分组文件夹是唯一事实来源**：往 ~/Dock Groups/<组名>/ 里加/删 App，
+**分组文件夹是唯一事实来源**：往 <落盘目录>/<组名>/ 里加/删 App，
 启动器运行时现读该文件夹；只需跑 rebuild 刷新拼贴图标。
 
 依赖：系统自带 /usr/bin/python3（含 PIL）+ osascript；
@@ -53,7 +53,7 @@ Dock 只支持把「文件夹」放进去，而且**文件夹的点击弹出网�
     test    组名          手动启动一次启动器，验证点击展开效果
     logs    组名          查看运行日志（面板几何 + 点击事件轨迹）
     remove  组名...       从 Dock 移除（保留文件夹）
-    clean   组名...       从 Dock 移除并删除文件夹
+    clean   组名...       从 Dock 移除并删除文件夹（配置条目一并清掉）
     doctor                体检：检查依赖是否齐全
     init [--force]        扫描当前 Dock，生成 starter groups.json
     watch-install         安装自动监听（文件夹一变就自动刷新图标）
@@ -65,7 +65,8 @@ apply 可选：--keep-originals 保留左侧原图标，不自动摘除。
 
 环境变量
 --------
-    DOCKGROUP_HOME        落盘目录，默认 ~/Dock Groups
+    DOCKGROUP_HOME        落盘目录，默认 ~/Library/Application Support/DockGroup/data
+    （v1.4.0 起 home 目录不再留东西；旧 ~/Dock Groups 首次运行时自动无损迁移）
 """
 
 from __future__ import annotations
@@ -83,9 +84,10 @@ import tempfile
 import time
 import urllib.parse
 from datetime import datetime
+import math
 from pathlib import Path
 
-__version__ = "1.3.1"
+__version__ = "1.4.0"
 
 try:
     from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
@@ -105,9 +107,12 @@ except ImportError:
 
 HOME = Path.home()
 SCRIPT_DIR = Path(__file__).resolve().parent
-BASE = Path(os.environ.get("DOCKGROUP_HOME") or (HOME / "Dock Groups")).expanduser()
+APP_SUPPORT = HOME / "Library" / "Application Support" / "DockGroup"
+BASE = Path(os.environ.get("DOCKGROUP_HOME") or (APP_SUPPORT / "data")).expanduser()
+LEGACY_BASE = HOME / "Dock Groups"
 CACHE = BASE / ".cache"              # 图标缓存
 BACKUP = BASE / ".backup"            # Dock 备份
+BACKUP_KEEP = 20                     # 备份轮转上限（dock_write 每次真实写入留一份）
 APPS = BASE / ".apps"                # 生成的启动器 App（左侧 App 区用）
 CONFIG_PATH = BASE / "groups.json"
 DOCK_DOMAIN = "com.apple.dock"
@@ -550,14 +555,67 @@ def jxa(key: str, *args):
     return out.split("\n") if out else []
 
 
+# ─────────────────────────────────────────────────────────── 旧版迁移（v1.4.0）
+
+def migrate_legacy_data_if_needed():
+    """一次性迁移：旧 ~/Dock Groups → 新 BASE（v1.4.0）。详见 Swift 侧同名函数注释。
+
+    只在默认落盘时跑（设了 DOCKGROUP_HOME / DOCKGROUP_DOCK_PLIST → 跳过）。
+    """
+    if os.environ.get("DOCKGROUP_HOME") or os.environ.get("DOCKGROUP_DOCK_PLIST"):
+        return
+    # 先把**旧版管理窗口**结束掉（理由见 Swift 侧同名注释）：它是独立进程、
+    # 落盘路径编译期烧死，会一边往旧位置写一边把空配置留在那儿。
+    sh(["pkill", "-x", "DockGroupManager"])
+    if not LEGACY_BASE.is_dir() or BASE.exists():
+        if LEGACY_BASE.is_dir() and BASE.exists():
+            # 同 Swift 侧：数据已在新位置，旧目录多半是旧版 app 留下的空壳，
+            # 没有可迁移的内容 —— 别让用户反复重跑安装器。（2026-10-03 修。）
+            print("注：~/Dock Groups 还在，但数据已经在新位置了，没有可迁移的内容。")
+            print("   它多半是旧版管理窗口留下的空壳（新版已结束它的进程）。")
+            print("   确认无误后可删：先看一眼 ~/Dock Groups/groups.json，")
+            print("   若只是个空模板（没有你的分组），rm -rf ~/Dock Groups 即可。")
+        return
+    APP_SUPPORT.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.move(str(LEGACY_BASE), str(BASE))
+    except OSError as e:
+        sys.exit(f"迁移旧数据失败（~/Dock Groups → {BASE}）：{e}")
+    cfg = load_config()
+    touched = refresh_groups(cfg, quiet=True)
+    dock_sync(cfg, only=None, prune=True)
+    agent = HOME / "Library/LaunchAgents" / f"{AGENT_LABEL}.plist"
+    if agent.exists():
+        cmd_watch_install(cfg, [])
+    print(f"已迁移：~/Dock Groups → {BASE}（旧目录已移除），Dock 已同步。")
+    print("home 目录不再留 dockgroup 的东西：分组文件夹改用管理窗口的「在 Finder 里打开」。")
+
+
 # ─────────────────────────────────────────────────────────── 配置
 
 def load_config() -> dict:
     for p in (CONFIG_PATH, SCRIPT_DIR / "groups.json"):
         if p.exists():
             with p.open(encoding="utf-8") as f:
-                return json.load(f)
+                cfg = json.load(f)
+            _reject_non_finite(cfg, p)
+            return cfg
     return {"groups": []}
+
+
+def _reject_non_finite(node, path):
+    """json 允许解析出 inf/nan（手改配置写个 1e999 这类），dump 回去就是
+    「Infinity」—— 一份非法 JSON。读入时拦下，按配置损坏处理。
+    （2026-10-03 加；Swift 侧 JSONParser 对非有限数直接解析失败，同效果。）"""
+    stack = [node]
+    while stack:
+        v = stack.pop()
+        if isinstance(v, float) and not math.isfinite(v):
+            sys.exit(f"配置文件不是合法 JSON（含 inf/nan 数值？先修好它再跑）：{path}")
+        if isinstance(v, dict):
+            stack.extend(v.values())
+        elif isinstance(v, list):
+            stack.extend(v)
 
 
 def save_config(cfg: dict):
@@ -575,7 +633,7 @@ def group_name_problem(name):
     """校验分组名能不能安全地拿去拼 BASE/<名字> 做删除/创建。违规返回原因，合法返回 None。
 
     remove / clean 会拿用户输入的分组名直接拼路径删东西：`..`、`.`、带 `/` 的名字
-    会把删除导向 BASE 之外（`clean ..` 曾能删光整个 ~/Dock Groups 含备份）；
+    会把删除导向 BASE 之外（`clean ..` 曾能删光整个落盘目录含备份）；
     点开头的名字会撞上内部的 .cache / .backup / .apps。在动手前拦下。
     （2026-09-29 加；与 Swift 版 groupNameProblem 同规则。）
     """
@@ -595,13 +653,19 @@ def group_name_problem(name):
 # ─────────────────────────────────────────────────────────── 图标提取与合成
 
 def _icon_cache(app: Path):
-    """图标缓存路径（按 路径 + mtime 作 key），App 不存在返回 None。"""
+    """图标缓存路径（按 文件名 + mtime + 路径摘要 作 key），App 不存在返回 None。
+
+    路径摘要必须有：只有「文件名 + mtime」的话，/Applications/Foo.app 和
+    ~/Applications/Foo.app 在 mtime 相同时会共用一份图标，拼贴图可能用错。
+    （2026-10-03 修；Swift 版 iconCachePath 同款公式。）
+    """
     if not app.exists():
         return None
+    path_hash = hashlib.sha256(str(app).encode()).hexdigest()[:8]
     try:
-        key = f"{app.stem}-{int(app.stat().st_mtime)}"
+        key = f"{app.stem}-{int(app.stat().st_mtime)}-{path_hash}"
     except OSError:
-        key = app.stem
+        key = f"{app.stem}-0-{path_hash}"
     return CACHE / "app-icons" / f"{key}.png"
 
 
@@ -1023,8 +1087,14 @@ def build_launcher_app(g, style=DEFAULT_STYLE, force=False,
         png_to_icns(mosaic, icon)
         with info.open("wb") as f:
             plistlib.dump(plist, f)
-        sh(["codesign", "--force", "--sign", "-", str(app)])
-        stamp.write_text(digest)
+        cs = sh(["codesign", "--force", "--sign", "-", str(app)])
+        # 签名失败不写戳：戳一写，下一轮 rebuild 会因摘要命中跳过重签，
+        # 坏签名的产物就被固定住了。（与 Swift 版同规则，2026-10-03 修。）
+        if cs.returncode != 0:
+            print(f"⚠️ 「{name}」codesign 失败（退出码 {cs.returncode}）："
+                  f"{cs.stderr.strip()}", file=sys.stderr)
+        else:
+            stamp.write_text(digest)
         if Path(LSREGISTER).exists():
             sh([LSREGISTER, "-f", str(app)])
         # 关键：IconServices 按 bundle 的 mtime 缓存图标。
@@ -1106,6 +1176,80 @@ def make_manager_icon(out: Path) -> Path:
     return out
 
 
+def sync_manager_app_to_applications(built: Path):
+    """把刚构建好的管理窗口同步到 /Applications（那儿已经有一份我们的才动）。
+
+    **为什么需要这一步**（2026-10-03 用户实报「打开 app 看不到之前的配置」）：
+    /Applications/DockGroup.app 是**独立的一份副本**，装的时候拷过去的。它不会
+    跟着引擎升级 —— 升级后用户双击的还是旧版，而旧版的落盘路径是编译期烧死的。
+    本次改动把落盘目录从 ~/Dock Groups 搬进 Application Support，旧副本于是去
+    老地方找、找不到就**按首次运行建了个空配置**，看起来就像配置丢了。
+
+    判据用**可执行文件字节**而不是版本号：manager 的 CFBundleVersion 是写死的
+    "1"，比不出新旧；字节一样就说明是同一份，一个字节都不动（保 mtime，
+    免得 Dock / LaunchServices 白刷一遍图标）。
+
+    三种情况一律不碰，返回 None：
+      · 对照测试模式（DOCKGROUP_DOCK_PLIST）—— 测试绝不能写真实 /Applications；
+      · /Applications 里没有 —— 不主动创建（用户可能只想要数据目录里那份）；
+      · 那儿是个**别人的**同名 App（bundle id 不是我们的）—— 绝不覆盖。
+    """
+    if dock_plist_override() is not None:
+        return None
+    # DOCKGROUP_HOME（对照测试隔离）也跳过：测试绝不写真实 /Applications。
+    # build-app.sh 第 ③ 步跑在 DOCKGROUP_HOME 下，缺这道闸的话发版脚本会把
+    # 构建机自己装的那份悄悄换掉。（2026-10-03 修；Swift 版同款。）
+    if os.environ.get("DOCKGROUP_HOME"):
+        return None
+    dest = Path("/Applications/DockGroup.app")
+    if not dest.exists():
+        return None
+    try:
+        with (dest / "Contents/Info.plist").open("rb") as f:
+            pl = plistlib.load(f)
+    except (OSError, plistlib.InvalidFileException):
+        return None
+    if pl.get("CFBundleIdentifier") != "local.dockgroup.manager":
+        return None
+    # 只允许装**管理窗口** bundle（同 Swift 侧）：带 DockGroupName / DockGroupFolder
+    # 的是分组启动器，装进 /Applications 会变成「双击弹出某个分组面板」。
+    try:
+        with (built / "Contents/Info.plist").open("rb") as f:
+            built_pl = plistlib.load(f)
+        if "DockGroupName" in built_pl or "DockGroupFolder" in built_pl:
+            return "⚠️  拒绝把分组启动器装进 /Applications（只装管理窗口）"
+    except (OSError, plistlib.InvalidFileException):
+        return None
+    built_exe = built / "Contents/MacOS/DockGroupManager"
+    dest_exe = dest / "Contents/MacOS/DockGroupManager"
+    try:
+        if built_exe.read_bytes() == dest_exe.read_bytes():
+            return None   # 同一份，不折腾
+    except OSError:
+        pass
+    # 先拷进 /Applications 下的暂存目录再交换：直接「删旧的 → 拷新的」的话，
+    # 拷贝阶段失败（磁盘满 / 权限）会把旧副本删掉而新的没装上，双击的连旧版
+    # 都没有。暂存放同一个目录里，rename 是同卷原子操作（2026-10-03 修）。
+    staging = dest.parent / f".DockGroup.app.staging-{os.getpid()}"
+    try:
+        if staging.exists():
+            shutil.rmtree(staging)
+        shutil.copytree(built, staging, symlinks=True)
+    except OSError as e:
+        shutil.rmtree(staging, ignore_errors=True)
+        # 失败要说出来：静默的话用户双击的还是旧版，又变成「配置看不见」。
+        return (f"⚠️  没能更新 /Applications/DockGroup.app（{e}）"
+                "；/Applications 里的旧副本未动，跑一次 tools/install.command 可修复")
+    try:
+        shutil.rmtree(dest)
+        os.rename(staging, dest)
+    except OSError as e:
+        shutil.rmtree(staging, ignore_errors=True)
+        return (f"⚠️  没能更新 /Applications/DockGroup.app（{e}）"
+                "；旧副本可能已不在，跑一次 tools/install.command 可修复")
+    return "已更新 /Applications/DockGroup.app（双击的那个）"
+
+
 def build_manager_app(force=False) -> Path:
     """打包管理窗口 App —— 全机只有一个，不随分组变化。
 
@@ -1156,8 +1300,14 @@ def build_manager_app(force=False) -> Path:
         png_to_icns(icon_png, icon)
         with info.open("wb") as f:
             plistlib.dump(plist, f)
-        sh(["codesign", "--force", "--sign", "-", str(app)])
-        stamp.write_text(digest)
+        cs = sh(["codesign", "--force", "--sign", "-", str(app)])
+        # 签名失败不写戳：戳一写，下一轮构建会因摘要命中跳过重签，
+        # 坏签名的产物就被固定住了。（与 Swift 版同规则，2026-10-03 修。）
+        if cs.returncode != 0:
+            print(f"⚠️ DockGroup.app codesign 失败（退出码 {cs.returncode}）："
+                  f"{cs.stderr.strip()}", file=sys.stderr)
+        else:
+            stamp.write_text(digest)
         if Path(LSREGISTER).exists():
             sh([LSREGISTER, "-f", str(app)])
         for d_ in (app, app / "Contents", app / "Contents/Resources", icon, exe):
@@ -1168,6 +1318,9 @@ def build_manager_app(force=False) -> Path:
     if strip_quarantine(app):
         print(f"  已清除「{app.name}」继承来的隔离属性"
               "（否则首次打开会被 Gatekeeper 拦）")
+    note = sync_manager_app_to_applications(app)
+    if note:
+        print(f"  {note}")
     return app
 
 
@@ -1350,6 +1503,7 @@ def dock_write(pl: dict, rebuilt: bool = False, finder_restart: bool = True):
     _tmp = bak.with_name(bak.name + ".tmp")
     _tmp.write_bytes(cur.stdout)
     os.replace(_tmp, bak)
+    _prune_backups()
     subprocess.run(["defaults", "import", DOCK_DOMAIN, "-"], input=data, check=True)
     _dock_cache = pl
     sh(["killall", "Dock"])
@@ -1366,12 +1520,43 @@ def tile_label(tile: dict):
         return None
 
 
+def _prune_backups():
+    """备份轮转：只留最近 BACKUP_KEEP 份。此前只增不删，每次真实写入都留一份
+    几十 KB 的 plist，无限累积。（2026-10-03 加；Swift 版 pruneBackups 同款。）
+    文件名带毫秒、定宽，按名字排序即按时间排序，删的是最旧的。"""
+    if not BACKUP.is_dir():
+        return
+    cands = sorted(BACKUP.glob("com.apple.dock-*.plist"))
+    for old in cands[:max(0, len(cands) - BACKUP_KEEP)]:
+        old.unlink(missing_ok=True)
+
+
 def tile_path(tile: dict):
     try:
         return urllib.parse.unquote(
             tile["tile-data"]["file-data"]["_CFURLString"]).replace("file://", "").rstrip("/")
     except Exception:
         return None
+
+
+def is_group_tile(tile: dict, left: bool) -> bool:
+    """这条 tile 是不是我们自己造的分组图标。分组图标的路径一定落在落盘目录里：
+    左侧启动器在 APPS/<组名>.app，右侧文件夹 Stack 在 BASE/<组名>（dock_fixture
+    模拟的旧版残留也是这个形态）。只按 file-label 匹配的话，真实 App 恰好与
+    分组同名（比如分组叫「微信」、Dock 上也有微信）会被误摘/误替换 —— 加路径
+    闸门后只动我们自己的产物。（2026-10-03 修；Swift 版 isGroupTile 同款。）
+    """
+    p = tile_path(tile)
+    if not p:
+        return False
+
+    def under(root) -> bool:
+        r = str(root)
+        return p == r or p.startswith(r if r.endswith("/") else r + "/")
+
+    if left and under(APPS):
+        return True
+    return under(BASE)
 
 
 def make_tile(folder: Path, label: str) -> dict:
@@ -1422,7 +1607,9 @@ def dock_sync(cfg, only=None, prune=True, rebuilt=False):
     after=<App 路径>  → 可选，显式指定插在哪个 App 后面，覆盖自动落位
     """
     targets = _targets(cfg, only)
-    pl = dock_read()
+    # 底稿必须现读：apply 构建多个分组可能耗时数十秒，期间用户可能手动拖动
+    # 了 Dock —— 用命令开头缓存的旧底稿会把那些改动覆盖掉。（2026-10-03 修。）
+    pl = dock_read(refresh=True)
     managed = {g["name"] for g in cfg["groups"]}
     original = pl.get("persistent-apps", [])
     original_others = pl.get("persistent-others", [])
@@ -1448,9 +1635,11 @@ def dock_sync(cfg, only=None, prune=True, rebuilt=False):
                      if g.get("placement", "left") == "right"}
 
     def currently_docked(g):
-        labels = [tile_label(t) for t in original] + \
-                 [tile_label(t) for t in original_others]
-        return g["name"] in labels
+        for tiles, is_left in ((original, True), (original_others, False)):
+            if any(tile_label(t) == g["name"] and is_group_tile(t, is_left)
+                   for t in tiles):
+                return True
+        return False
 
     # 自动落位：只给**还不在 Dock 上**的新分组算；锚 = 每组第一个 App 在原列表中的下标
     first_pos, fallback = {}, []
@@ -1465,7 +1654,7 @@ def dock_sync(cfg, only=None, prune=True, rebuilt=False):
             first_pos.setdefault(idx, []).append(g)
 
     def keep_left(t):
-        if tile_label(t) in managed:
+        if tile_label(t) in managed and is_group_tile(t, True):
             return False
         return not (prune and matches(t, all_grouped))
 
@@ -1480,12 +1669,12 @@ def dock_sync(cfg, only=None, prune=True, rebuilt=False):
                 left.append(tile_for(g))
                 placed.add(g["name"])
         label = tile_label(t)
-        if label in pending_left:
+        if label in pending_left and is_group_tile(t, True):
             left.append(tile_for(pending_left[label]))   # 原地替换：保住现有位置
             placed.add(label)
             replaced_in_place.add(label)
             continue
-        if label in managed:
+        if label in managed and is_group_tile(t, True):
             continue                                     # 分组被禁用/删除 → 照旧摘掉
         if keep_left(t):
             left.append(t)
@@ -1493,12 +1682,12 @@ def dock_sync(cfg, only=None, prune=True, rebuilt=False):
     right = []
     for t in original_others:
         label = tile_label(t)
-        if label in pending_right:
+        if label in pending_right and is_group_tile(t, False):
             right.append(tile_for(pending_right[label]))  # 原地替换
             placed.add(label)
             replaced_in_place.add(label)
             continue
-        if label in managed:
+        if label in managed and is_group_tile(t, False):
             continue
         if (tile_path(t) or "").startswith(str(BASE)):
             continue
@@ -1547,8 +1736,10 @@ def dock_remove(names):
     # ⚠️ 两个区都要摘：左侧启动器 tile 在 persistent-apps，右侧文件夹 Stack 在
     # persistent-others —— 只摘右边的话，remove 之后左侧磁贴原地不动，
     # 命令却照常打印「已从 Dock 移除」。（2026-09-29 修；Swift 版 dockRemove 同款。）
-    for key in ("persistent-apps", "persistent-others"):
-        pl[key] = [t for t in pl.get(key, []) if tile_label(t) not in victims]
+    # is_group_tile 闸门：真实 App 与分组同名时不误摘（2026-10-03 修）。
+    for key, is_left in (("persistent-apps", True), ("persistent-others", False)):
+        pl[key] = [t for t in pl.get(key, [])
+                   if not (tile_label(t) in victims and is_group_tile(t, is_left))]
     dock_write(pl)
 
 
@@ -1606,6 +1797,11 @@ def _mdfind_app(needle: str):
 
 def resolve_app(spec: str):
     """把 'Google Chrome' / 'chrome' / 'Safari' / '系统设置' / 完整路径 解析成 App 路径。"""
+    # 空串／纯空白直接判「找不到」：模糊匹配的 contains 对空串恒真，会命中
+    # 字母序第一个 App；Path("") 解析成 "." 还 exists() 为真。必须在最前拦。
+    # （2026-10-03 修；Swift 版 resolveApp 同款守卫。）
+    if not spec.strip():
+        return None
     p = Path(spec).expanduser()
     if p.exists():
         return p
@@ -1736,6 +1932,12 @@ def prompt_group_name(cfg):
         name = ask("新分组叫什么名字（如 AI / 工作 / 工具）")
         if not name:
             return None
+        # 创建侧也要校验：否则建成 `a/b` / `.x` 这类名字后，remove/clean 会
+        # 按同一条校验拒绝处理它 —— 分组从此删不掉（2026-10-03 修）。
+        why = group_name_problem(name)
+        if why:
+            print(f"  「{name}」：{why}，换一个")
+            continue
         if find_group(cfg, name):
             print(f"  「{name}」已存在，换一个")
             continue
@@ -1854,20 +2056,27 @@ def _add_apps(cfg, g, paths):
         # 第二次必须是廉价空操作，否则会白白重启一次 Dock。
         return 0
 
-    jxa("mkalias", folder, *todo)
+    made = set(jxa("mkalias", folder, *todo) or [])
+    # 建别名失败要报告、且不能写进配置：吞掉的话这里照样打印「+ App」并写进
+    # groups.json，实际文件夹里没有别名，网格里也不出现。（2026-10-03 修；
+    # Swift 侧 addApps 同款。）
     for p in todo:
-        print(f"  + {p.stem}")
+        if p.stem in made:
+            print(f"  + {p.stem}")
+    failed = [p.stem for p in todo if p.stem not in made]
+    if failed:
+        print(f"  ⚠️ 这些 App 未能建别名（没写进配置）：{'、'.join(failed)}")
 
     # 配置里的 apps 列表同步，保证 groups.json 与文件夹一致
     apps = g.setdefault("apps", [])
     known = {str(Path(a).expanduser()) for a in apps}
     for p in todo:
-        if str(p) not in known:
+        if p.stem in made and str(p) not in known:
             apps.append(str(p))
     save_config(cfg)
 
     refresh_groups(cfg, {gname}, quiet=True)
-    return len(todo)
+    return len([p for p in todo if p.stem in made])
 
 
 def interactive_add(cfg):
@@ -2079,6 +2288,11 @@ def cmd_new(cfg, args):
                  '或直接敲 dg new 进入交互模式（输组名、敲数字选 App）\n'
                  '一步到位：dg new --apply <组名> "App"...  建完直接写进 Dock')
     gname, specs = args[0], args[1:]
+    # 创建侧也要校验（与 remove/clean 同一条规则）：带 / 或 : 、点开头这类名字
+    # 建得成却删不掉 —— remove/clean 会按 group_name_problem 拒绝处理它。
+    why = group_name_problem(gname)
+    if why:
+        sys.exit(f"「{gname}」：{why}")
     if find_group(cfg, gname):
         sys.exit(f"分组「{gname}」已存在，改配置或先 remove")
     paths, bad = [], []
@@ -2164,16 +2378,20 @@ def cmd_apply(cfg, args):
         print(f"  ✓ {g['name']} → {dest}（{len(ok)} 个 App）")
         if missing:
             print(f"       ⚠ 跳过 {len(missing)} 个不存在的 App")
+    # 先杀启动器再写 Dock（与 refresh_groups 同一安全顺序）：dock_sync 内部会
+    # killall Dock，顺序反了的话，重启完 Dock 到旧启动器退出的间隙里点到图标，
+    # 会用旧布局画一次面板。打印保持在原有位置，输出顺序不变。（2026-10-03 修。）
+    killed = kill_launchers()
     dock_sync(cfg, only=None, prune=not keep, rebuilt=any_rebuilt)
     after = len(dock_read().get("persistent-apps", []))
     print(f"\nDock 左侧 App 图标：{before} → {after}")
-    if kill_launchers():
+    if killed:
         print("  已结束正在运行的启动器 —— 下次点开面板才会用上新布局")
     for g in targets:
         pos = "左侧 App 区（%s 之后）" % Path(g["after"]).stem if g.get("after") \
             else ("分隔线右侧" if g.get("placement") == "right" else "左侧 App 区末尾")
         print(f"  分组「{g['name']}」位置：{pos}")
-    print("备份在 ~/Dock Groups/.backup/，出错用 dg restore 回滚")
+    print(f"备份在 {BACKUP}，出错用 dg restore 回滚")
 
 
 def cmd_rebuild(cfg, args):
@@ -2278,8 +2496,14 @@ def group_layout(cfg, g):
     return str(g.get("layout") or cfg.get("layout", DEFAULT_LAYOUT))
 
 
-def group_app_count(g):
-    """数分组文件夹里的有效条目数。
+def folder_entry_count(g):
+    """数分组文件夹里的有效条目数；文件夹不存在返回 None。
+
+    ⚠️ 名字不能叫 group_app_count：1883 行已有一个同名函数（文件夹优先、
+    没建文件夹时回退读配置，给交互列表用）。之前这里重名，后定义的把前者
+    整个遮蔽掉，交互列表对未建文件夹的分组显示「None 个 App」（2026-10-03 修）。
+    两个语义不同：本函数只数文件夹（None = 没建），`dg layout` 用它；
+    `group_app_count` 带配置回退，pick_group 用它。
 
     过滤规则和启动器 main.swift 的 readEntries() 对齐：跳过 .DS_Store 之类的
     隐藏文件，以及带 \\r 的自定义图标文件（Icon\\r）——它不是 App，不占格子。
@@ -2302,7 +2526,7 @@ def cmd_layout(cfg, args):
         print(f"默认布局：{cfg.get('layout', DEFAULT_LAYOUT)}")
         for g in cfg["groups"]:
             own = g.get("layout") or "（跟随默认）"
-            n = group_app_count(g)
+            n = folder_entry_count(g)
             if n is None:
                 print(f"  {g['name']:<12} {own:<14} 文件夹不存在")
                 continue
@@ -2459,7 +2683,7 @@ def cmd_del(cfg, args):
 
     entries = _folder_entries(folder)
     target_of = {n: t for n, t, _ in read_folder_apps(folder)}
-    removed, missed, danger = [], [], []
+    removed, missed, danger, remove_failed = [], [], [], []
     for n in needles:
         low = n.lower()
         hits = [p for p in entries if low in p.stem.lower()]
@@ -2477,13 +2701,20 @@ def cmd_del(cfg, args):
             if p.is_dir():
                 danger.append(p.name)      # 真实 App（目录），不能删
                 continue
-            p.unlink()                     # 别名是文件，安全
-            removed.append(p)
+            try:
+                p.unlink()                 # 别名是文件，安全
+                removed.append(p)
+            except OSError as e:
+                # 删失败必须按「没删掉」处理：吞掉的话这里照样把它算进 removed，
+                # 打印「已移除」、改写配置，文件夹和配置从此对不上。
+                remove_failed.append((p.name, str(e)))
 
     if missed:
         print(f"  ⚠ 分组里没有匹配：{'、'.join(missed)}")
     if danger:
         print(f"  ⛔ 这些是真实 App 而非别名，已跳过（要删请手动处理）：{'、'.join(danger)}")
+    for name, reason in remove_failed:
+        print(f"  ⚠️ 无法删除「{name}」：{reason}")
     if not removed:
         sys.exit("没有移除任何 App")
 
@@ -2545,7 +2776,13 @@ def cmd_clean(cfg, args):
             sys.exit(f"拒绝删除「{n}」：解析后的路径不在 {BASE} 里")
         if f.exists():
             shutil.rmtree(f)
-    print(f"已从 Dock 移除并删除文件夹：{', '.join(args)}")
+    # 配置条目必须一并摘掉：文件夹都删了还留着 enabled:true 的条目，
+    # 下一次 apply 会经 collect_apps（文件夹为空时按配置播种）把整组复活，
+    # 而只靠拖放加进文件夹、没写进配置 apps 的成员此时已经随文件夹丢了。
+    cleaned = set(args)
+    cfg["groups"] = [g for g in cfg["groups"] if g["name"] not in cleaned]
+    save_config(cfg)
+    print(f"已从 Dock 移除并删除文件夹：{', '.join(args)}（配置条目已一并移除）")
 
 
 def cmd_watch_install(cfg, args):
@@ -2663,6 +2900,20 @@ def cmd_restore(cfg, args):
         src = cands[-1]
     data = src.read_bytes()
     plistlib.loads(data)
+    # 恢复前先把**当前**状态也存一份备份：万一选错了备份，还能再 restore 一次
+    # 回到恢复前的样子。静默写、不打印（文件名带毫秒时间戳，两侧对不齐，
+    # 而这条路径的输出是逐字节比的）。（2026-10-03 加；Swift 版同款。）
+    if dock_plist_override() is None:
+        cur = subprocess.run(["defaults", "export", DOCK_DOMAIN, "-"], capture_output=True)
+        if cur.returncode == 0 and cur.stdout:
+            BACKUP.mkdir(parents=True, exist_ok=True)
+            now = datetime.now()
+            stamp = now.strftime("%Y%m%d-%H%M%S-") + f"{now.microsecond // 1000:03d}"
+            bak = BACKUP / f"com.apple.dock-{stamp}.plist"
+            _tmp = bak.with_name(bak.name + ".tmp")
+            _tmp.write_bytes(cur.stdout)
+            os.replace(_tmp, bak)
+            _prune_backups()
     if dock_plist_override() is not None:
         # 对照测试：替身文件收下原始字节，不碰真 Dock（Swift 版同款开关）。
         # restore 是唯一故意绕过 dock_write 直灌字节的路径，进哪里都必须可测。
@@ -2692,7 +2943,7 @@ QUICK_HELP = """dg — macOS Dock 分组管理
   dg open 组名          在 Finder 里打开分组文件夹
   dg logs 组名          查看运行日志
   dg remove 组名        从 Dock 移除（保留文件夹）
-  dg clean  组名        从 Dock 移除并删掉文件夹
+  dg clean  组名        从 Dock 移除并删掉文件夹（配置条目一并清掉）
   dg rebuild            全部重新生成图标
   dg style [组名|--all] [材质]   换面板底色（不带参数 = 看现状 + 材质清单）
   dg doctor             依赖体检
@@ -2734,8 +2985,39 @@ def print_quick_help():
         print(f"  {g['name']:<12} {n} 个 App   {where}")
 
 
+def sync_installed_engine_copies():
+    """把安装根里的引擎副本对齐到**正在运行的这个脚本**。
+
+    理由见 Swift 侧同名函数注释：引擎副本散在四处，升级时没人负责换新，
+    而管理窗口是转发命令给 dg 执行的 —— 旧 dg 用旧路径找配置，报「没有分组 X」。
+
+    只同步 .py 回退脚本（二进制那份归 Swift 侧管，Python 版不碰二进制）。
+    对照测试模式直接跳过。
+    """
+    if os.environ.get("DOCKGROUP_HOME") or os.environ.get("DOCKGROUP_DOCK_PLIST"):
+        return
+    src = SCRIPT_DIR / "dockgroup.py"
+    dst = APP_SUPPORT / "scripts" / "dockgroup.py"
+    try:
+        want = src.read_bytes()
+        if dst.exists() and dst.read_bytes() == want:
+            return
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        # tmp + os.replace：写入中断不会留下半截脚本（同 dock_write 的防半截
+        # 手法）。（2026-10-03 修。）
+        tmp = dst.with_name(dst.name + ".tmp")
+        tmp.write_bytes(want)
+        os.replace(tmp, dst)
+    except OSError as e:
+        print(f"⚠️  引擎副本自愈失败（{dst}）：{e}", file=sys.stderr)
+
+
 def main():
     argv = sys.argv[1:]
+    # 纯查询类不该有副作用：打印版本号不该把用户目录搬家。（2026-10-03 加围栏。）
+    if argv and argv[0] not in ("-v", "--version", "version", "-h", "--help", "help"):
+        migrate_legacy_data_if_needed()
+        sync_installed_engine_copies()
     if not argv:
         print_quick_help()
         return

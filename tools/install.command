@@ -31,7 +31,9 @@ echo
 
 DG="$HOME/.local/bin/dg"
 MARKER="$HOME/.local/bin/.dg-repo-root"
-CACHE="$HOME/Dock Groups/.cache"
+SUPPORT="$HOME/Library/Application Support/DockGroup"
+DATADIR="$SUPPORT/data"
+CACHE="$DATADIR/.cache"
 PREBUILT="$ROOT/prebuilt/dg"
 
 if [ -x "$PREBUILT" ]; then
@@ -49,6 +51,26 @@ if [ -x "$PREBUILT" ]; then
     echo "   已安装 → $DG"
     echo "$ROOT" > "$MARKER"
     echo "   仓库位置已记录到 $MARKER（引擎按它找源码与脚本）"
+
+    echo
+    echo "②b 迁移旧数据（v1.4.0 起 home 目录不再留东西）"
+    # ⚠️ 本块必须在 ③（mkdir -p "$CACHE"）之前：CACHE 在 data/ 里，先把 data/
+    # 建出来的话，下面的 [ ! -e "$DATADIR" ] 恒假，迁移永远走不到 —— 而引擎侧
+    # 的 migrateLegacyDataIfNeeded 也会因「新目录已存在」拒绝补迁（2026-10-03 修）。
+    # 旧版管理窗口是独立进程、落盘路径编译期烧死：不结束它，迁移完它一保存
+    # 又把 ~/Dock Groups 建回来（pitfalls 27.3；引擎与 Bootstrap 同款）。
+    pkill -x DockGroupManager 2>/dev/null || true
+    if [ -d "$HOME/Dock Groups" ] && [ ! -e "$DATADIR" ]; then
+        mkdir -p "$SUPPORT"
+        mv "$HOME/Dock Groups" "$DATADIR" \
+            && echo "   已迁移：~/Dock Groups → $DATADIR" \
+            || { echo "   ❌ 迁移旧数据失败，安装中止。" >&2; exit 1; }
+    elif [ -d "$HOME/Dock Groups" ]; then
+        echo "   ⚠️  旧目录 ~/Dock Groups 还在，但新目录已有内容，没有自动迁移。"
+        echo "      确认数据无误后可手动删除 ~/Dock Groups。"
+    else
+        echo "   没有旧数据，全新安装"
+    fi
 
     echo
     echo "③ 预置启动器 / 管理窗口二进制"
@@ -71,6 +93,18 @@ if [ -x "$PREBUILT" ]; then
     shasum -a 256 "$ROOT/scripts/manager/main.swift" | awk '{print $1}' \
         > "$CACHE/.manager.src-stamp"
     echo "   已放入 $CACHE（apply 免编译）"
+
+    # 源码副本跟着更新：引擎按「仓库 → 缓存」找源码，而安装根那份是**这次**
+    # 拷进去的。它一旦过期，重建出来的 manager/launcher 就是旧逻辑
+    # （2026-10-03 用户实报「打开 app 看不到配置」，根因之一就是它）。
+    # 安装根是 dg 的默认 REPO_ROOT，必须和 dg 自己是同一棵树。
+    for pair in "scripts/launcher/main.swift:launcher/main.swift" \
+                "scripts/manager/main.swift:manager/main.swift"; do
+        src="${pair%%:*}"; dst="${pair##*:}"
+        mkdir -p "$SUPPORT/scripts/$(dirname "$dst")"
+        cp "$ROOT/$src" "$SUPPORT/scripts/$dst"
+    done
+    echo "   安装根源码已同步（$SUPPORT/scripts）"
     DG_RUN="bin"
 else
     # ─────────────────────────────── B. 源码安装
@@ -137,16 +171,24 @@ echo
 echo "④ 生成图形界面"
 # 构建管理窗口 App 并放进「应用程序」—— 之后双击 DockGroup.app 就能操作，
 # 完全不用终端。--no-open：只构建不开窗。
-APP_SRC="$HOME/Dock Groups/.apps/DockGroup.app"
+APP_SRC="$DATADIR/.apps/DockGroup.app"
 if [ "${DG_RUN:-}" = "bin" ]; then
     "$DG" gui --no-open
 else
     /usr/bin/python3 "$ROOT/scripts/dockgroup.py" gui --no-open
 fi
 if [ -d "$APP_SRC" ]; then
-    rm -rf "/Applications/DockGroup.app"
-    cp -R "$APP_SRC" /Applications/
-    echo "   已放入 /Applications/DockGroup.app（双击即用）"
+    # 先删后拷必须串成一条链：rm 失败还继续 cp 的话，新 app 会被拷成
+    # DockGroup.app/DockGroup.app 的嵌套；cp 失败也不许报「已放入」。
+    # （2026-10-03 修：此前无条件打印成功。）
+    if rm -rf "/Applications/DockGroup.app" \
+       && cp -R "$APP_SRC" "/Applications/DockGroup.app"; then
+        echo "   已放入 /Applications/DockGroup.app（双击即用）"
+    else
+        echo "   ⚠️  未能更新 /Applications/DockGroup.app（权限 / 磁盘空间？）" >&2
+        echo "      双击的可能还是旧版。可手动执行：" >&2
+        echo "        rm -rf /Applications/DockGroup.app && cp -R \"$APP_SRC\" /Applications/" >&2
+    fi
 else
     echo "   ⚠️  图形界面没构建出来，之后随时可以跑 dg gui 补上。"
 fi

@@ -35,7 +35,7 @@ func showHelp() {
       new <组名> <App>...  新建分组（--apply 一步写进 Dock；不带参数进交互模式）
       open <组名>          在 Finder 里打开分组文件夹
       remove <组名>...     从 Dock 移除（保留文件夹）
-      clean <组名>...      从 Dock 移除并删掉文件夹
+      clean <组名>...      从 Dock 移除并删掉文件夹（配置条目一并清掉）
       restore [备份路径]   出错了回滚 Dock（不带参数用最新备份）
       preview [组名...]    合成图标并生成对比图（只读）
       test <组名>          启动一次启动器 App 做真机测试
@@ -48,7 +48,21 @@ func showHelp() {
     """)
 }
 
-let rawArgs = Array(CommandLine.arguments.dropFirst())
+// 旧数据迁移（v1.4.0）放在**分发之前**：所有真实命令都该看到迁移后的落盘。
+// 但纯查询类（--version / --help / __dump-config）不该有副作用 —— 打印个版本号
+// 就把用户目录搬了家，是没人能预料到的行为。（2026-10-03 加围栏。）
+let peekArgs = Array(CommandLine.arguments.dropFirst())
+let isPureQuery = peekArgs.isEmpty
+    || ["--version", "-v", "version", "--help", "-h", "help", "__dump-config"]
+        .contains(peekArgs[0])
+if !isPureQuery {
+    migrateLegacyDataIfNeeded()
+    // 引擎副本自愈：升级后 ~/.local/bin/dg / 安装根 prebuilt/dg 可能还是旧版，
+    // 而 GUI 是转发命令给 dg 执行的 —— 旧 dg 会用旧路径找配置，报「没有分组 X」。
+    syncInstalledEngineCopies()
+}
+
+let rawArgs = peekArgs
 
 guard let cmd = rawArgs.first else {
     showHelp()

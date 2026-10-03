@@ -20,7 +20,7 @@ func folderEntries(_ folder: URL) -> [URL] {
 /// 校验分组名能不能安全地拿去拼 `BASE/<名字>` 做删除/创建。违规返回原因，合法返回 nil。
 ///
 /// remove / clean 会拿用户输入的分组名直接拼路径删东西：`..`、`.`、带 `/` 的名字
-/// 会把删除导向 BASE 之外（`clean ..` 曾能删光整个 ~/Dock Groups 含备份）；
+/// 会把删除导向 BASE 之外（`clean ..` 曾能删光整个落盘目录含备份）；
 /// 点开头的名字会撞上内部的 .cache / .backup / .apps。在动手前拦下。
 /// （2026-09-29 加；与 Python 版 group_name_problem 同规则。）
 func groupNameProblem(_ name: String) -> String? {

@@ -105,6 +105,77 @@ func makeManagerIcon(out: URL) -> URL {
     return out
 }
 
+/// 把刚构建好的管理窗口同步到 /Applications（那儿已经有一份我们的才动）。
+///
+/// **为什么需要这一步**（2026-10-03 用户实报「打开 app 看不到之前的配置」）：
+/// `/Applications/DockGroup.app` 是**独立的一份副本**，装的时候拷过去的。它不会
+/// 跟着引擎升级 —— 升级后用户双击的还是旧版，而旧版的落盘路径是编译期烧死的。
+/// 本次改动把落盘目录从 `~/Dock Groups` 搬进 Application Support，旧副本于是去
+/// 老地方找、找不到就**按首次运行建了个空配置**，看起来就像配置丢了。
+///
+/// 判据用**可执行文件字节**而不是版本号：manager 的 CFBundleVersion 是写死的
+/// "1"，比不出新旧；字节一样就说明是同一份，一个字节都不动（保 mtime，
+/// 免得 Dock / LaunchServices 白刷一遍图标）。
+///
+/// 三种情况一律不碰，返回 nil：
+///   · 对照测试模式（`DOCKGROUP_DOCK_PLIST`）—— 测试绝不能写真实 /Applications；
+///   · /Applications 里没有 —— 不主动创建（用户可能只想要数据目录里那份）；
+///   · 那儿是个**别人的**同名 App（bundle id 不是我们的）—— 绝不覆盖。
+func syncManagerAppToApplications(_ built: URL) -> String? {
+    if dockPlistOverride != nil { return nil }
+    // DOCKGROUP_HOME（对照测试隔离）也跳过：测试绝不写真实 /Applications。
+    // build-app.sh 第 ③ 步跑在 DOCKGROUP_HOME 下，缺这道闸的话发版脚本会把
+    // 构建机自己装的那份悄悄换掉。（2026-10-03 修；Python 版同款。）
+    if let h = ProcessInfo.processInfo.environment["DOCKGROUP_HOME"], !h.isEmpty {
+        return nil
+    }
+    let dest = URL(fileURLWithPath: "/Applications/DockGroup.app")
+    let fm = FileManager.default
+    guard fm.fileExists(atPath: dest.path) else { return nil }
+    guard let d = try? Data(contentsOf: dest.appendingPathComponent("Contents/Info.plist")),
+          let pl = (try? PropertyListSerialization.propertyList(
+              from: d, options: [], format: nil)) as? [String: Any],
+          (pl["CFBundleIdentifier"] as? String) == "local.dockgroup.manager" else { return nil }
+
+    // 只允许装**管理窗口** bundle：带 DockGroupName / DockGroupFolder 的是分组
+    // 启动器，装进 /Applications 就成了「双击弹出某个分组面板」的怪东西。
+    // （2026-10-03 手工测试时把分组启动器拷进去过，加这道闸防复发。）
+    if let b = try? Data(contentsOf: built.appendingPathComponent("Contents/Info.plist")),
+       let bp = (try? PropertyListSerialization.propertyList(
+           from: b, options: [], format: nil)) as? [String: Any],
+       bp["DockGroupName"] != nil || bp["DockGroupFolder"] != nil {
+        return "⚠️  拒绝把分组启动器装进 /Applications（只装管理窗口）"
+    }
+    let builtExe = built.appendingPathComponent("Contents/MacOS/DockGroupManager")
+    let destExe = dest.appendingPathComponent("Contents/MacOS/DockGroupManager")
+    if let a = try? Data(contentsOf: builtExe), let b = try? Data(contentsOf: destExe), a == b {
+        return nil   // 同一份，不折腾
+    }
+    // 先拷进 /Applications 下的暂存目录再交换：直接「删旧的 → 拷新的」的话，
+    // 拷贝阶段失败（磁盘满 / 权限）会把旧副本删掉而新的没装上，双击的连旧版
+    // 都没有。暂存放同一个目录里，rename 是同卷原子操作（2026-10-03 修）。
+    let staging = dest.deletingLastPathComponent()
+        .appendingPathComponent(".DockGroup.app.staging-\(getpid())")
+    do {
+        if fm.fileExists(atPath: staging.path) { try fm.removeItem(at: staging) }
+        try fm.copyItem(at: built, to: staging)
+    } catch {
+        try? fm.removeItem(at: staging)
+        // 失败要说出来：静默的话用户双击的还是旧版，又变成「配置看不见」。
+        return "⚠️  没能更新 /Applications/DockGroup.app（\(error.localizedDescription)）"
+            + "；/Applications 里的旧副本未动，跑一次 tools/install.command 可修复"
+    }
+    do {
+        try fm.removeItem(at: dest)
+        try fm.moveItem(at: staging, to: dest)
+    } catch {
+        try? fm.removeItem(at: staging)
+        return "⚠️  没能更新 /Applications/DockGroup.app（\(error.localizedDescription)）"
+            + "；旧副本可能已不在，跑一次 tools/install.command 可修复"
+    }
+    return "已更新 /Applications/DockGroup.app（双击的那个）"
+}
+
 /// 打包管理窗口 App：图标 + Swift 二进制 + Info.plist + 签名。
 /// 结构镜像 buildLauncherApp；版本键是写死的（"0.1.0" / "1"），摘要只决定
 /// 「要不要重建 bundle」，不进版本号。
@@ -178,13 +249,19 @@ func buildManagerApp(force: Bool = false) -> URL {
             fatal("写管理窗口 Info.plist 失败：\(error.localizedDescription)")
         }
 
+        // 同 buildLauncherApp：重签前清 FinderInfo，否则第二次构建起签名必失败。
+        run("/usr/bin/xattr", ["-c", app.path])
         let codesign = which("codesign") ?? "/usr/bin/codesign"
         let cs = run(codesign, ["--force", "--sign", "-", app.path])
         if !cs.ok {
             FileHandle.standardError.write(
                 "⚠️ DockGroup.app codesign 失败（退出码 \(cs.status)）：\n\(cs.errText)\n".data(using: .utf8)!)
         }
-        try? digest.write(to: stamp, atomically: true, encoding: .utf8)
+        // 签名失败不写戳：戳一写，下一轮构建会因摘要命中而跳过重签，
+        // 坏签名的产物就被固定住了。（与 buildLauncherApp 同规则。）
+        if cs.ok {
+            try? digest.write(to: stamp, atomically: true, encoding: .utf8)
+        }
         if fm.fileExists(atPath: LSREGISTER) {
             run(LSREGISTER, ["-f", app.path])
         }
@@ -201,5 +278,6 @@ func buildManagerApp(force: Bool = false) -> URL {
     if stripQuarantine(app) {
         print("  已清除「\(app.lastPathComponent)」继承来的隔离属性（否则首次打开会被 Gatekeeper 拦）")
     }
+    if let note = syncManagerAppToApplications(app) { print("  " + note) }
     return app
 }

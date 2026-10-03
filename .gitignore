@@ -2,7 +2,7 @@
 __pycache__/
 *.py[cod]
 
-# 用户配置（实际配置在 ~/Dock Groups/groups.json）
+# 用户配置（实际配置在 ~/Library/Application Support/DockGroup/data/groups.json）
 groups.json
 groups.local.json
 

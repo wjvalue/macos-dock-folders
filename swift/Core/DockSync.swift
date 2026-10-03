@@ -4,7 +4,7 @@
 // _targets / _insert_after / dock_sync / dock_remove。
 //
 // 这是整个工具里**唯一会改动用户 Dock** 的地方，也是最该小心的一段：
-// 写之前一定留备份（`~/Dock Groups/.backup/`，内容是**改动前**的配置），
+// 写之前一定留备份（`BASE/.backup/`，内容是**改动前**的配置），
 // 出问题能 restore 回滚。
 
 import Foundation
@@ -102,6 +102,7 @@ func dockWrite(_ pl: [String: Any], rebuiltHint: Bool = false,
     let stamp = DateFormatter.pythonStamp.string(from: Date())
     try cur.out.write(to: BACKUP.appendingPathComponent("com.apple.dock-\(stamp).plist"),
                       options: .atomic)
+    pruneBackups()
 
     let r = run("/usr/bin/defaults", ["import", DOCK_DOMAIN, "-"], input: data)
     guard r.ok else {
@@ -117,10 +118,28 @@ func dockWrite(_ pl: [String: Any], rebuiltHint: Bool = false,
     }
 }
 
-private extension DateFormatter {
+/// 备份轮转：只留最近 `BACKUP_KEEP` 份。此前只增不删，每次真实写入都留一份
+/// 几十 KB 的 plist，无限累积。（2026-10-03 加；Python 版 dock_write 同款。）
+/// 按文件名排序 = 按时间排序（文件名带毫秒、定宽），删的是最旧的。
+func pruneBackups() {
+    let fm = FileManager.default
+    guard let items = try? fm.contentsOfDirectory(at: BACKUP, includingPropertiesForKeys: nil)
+    else { return }
+    let cands = items
+        .filter { $0.lastPathComponent.hasPrefix("com.apple.dock-")
+               && $0.lastPathComponent.hasSuffix(".plist") }
+        .sorted { pyLess($0.lastPathComponent, $1.lastPathComponent) }
+    guard cands.count > BACKUP_KEEP else { return }
+    for old in cands.prefix(cands.count - BACKUP_KEEP) {
+        try? fm.removeItem(at: old)
+    }
+}
+
+extension DateFormatter {
     /// 备份文件名的格式：`datetime.now():%Y%m%d-%H%M%S` + 毫秒（同一秒两次写入
     /// 不互相覆盖；restore 只按前缀/后缀过滤、按名字排序取最新，毫秒位兼容）。
     /// 锁 en_US_POSIX：否则某些区域设置下会输出佛历 / 和历年份，文件名就没法看了。
+    /// （restore 的预恢复备份也用它 —— internal，别改回 private。）
     static let pythonStamp: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
@@ -162,6 +181,20 @@ func tileFor(_ g: JSONObject) -> [String: Any] {
 
 // ─────────────────────────────────────────────── 同步
 
+/// 这条 tile 是不是我们自己造的分组图标。分组图标的路径一定落在落盘目录里：
+/// 左侧启动器在 `APPS/<组名>.app`，右侧文件夹 Stack 在 `BASE/<组名>`（fixture 里
+/// 模拟的旧版残留也是这个形态）。只按 `file-label` 匹配的话，真实 App 恰好与
+/// 分组同名（比如分组叫「微信」、Dock 上也有微信）会被误摘/误替换 —— 加路径
+/// 闸门后只动我们自己的产物。（2026-10-03 修；Python 版 dock_sync 同款。）
+func isGroupTile(_ tile: [String: Any], left: Bool) -> Bool {
+    guard let p = tilePath(tile), !p.isEmpty else { return false }
+    func under(_ root: String) -> Bool {
+        p == root || p.hasPrefix(root.hasSuffix("/") ? root : root + "/")
+    }
+    if left && under(APPS.path) { return true }
+    return under(BASE.path)
+}
+
 /// 该被同步的分组。`only` 为空 = 所有 `enabled` 分组（默认 True）。
 func syncTargets(_ cfg: JSONObject, only: Set<String>?) -> [JSONObject] {
     cfg.groups.filter { g in
@@ -196,7 +229,9 @@ private func insertAfter(_ tiles: inout [[String: Any]], _ tile: [String: Any],
 func dockSync(_ cfg: JSONObject, only: Set<String>? = nil, prune: Bool = true,
               rebuilt: Bool = false) throws -> [String] {
     let tg = syncTargets(cfg, only: only)
-    let pl = dockRead()
+    // 底稿必须现读：apply 构建多个分组可能耗时数十秒，期间用户可能手动拖动
+    // 了 Dock —— 用命令开头缓存的旧底稿会把那些改动覆盖掉。（2026-10-03 修。）
+    let pl = dockRead(refresh: true)
     let managed = Set(cfg.groups.map { $0.name })
     let original = pl["persistent-apps"] as? [[String: Any]] ?? []
 
@@ -226,9 +261,9 @@ func dockSync(_ cfg: JSONObject, only: Set<String>? = nil, prune: Bool = true,
         if g.placement == "right" { pendingRight[g.name] = g } else { pendingLeft[g.name] = g }
     }
     func currentlyDocked(_ g: JSONObject) -> Bool {
-        original.contains { tileLabel($0) == g.name }
+        original.contains { tileLabel($0) == g.name && isGroupTile($0, left: true) }
             || ((pl["persistent-others"] as? [[String: Any]] ?? [])
-                .contains { tileLabel($0) == g.name })
+                .contains { tileLabel($0) == g.name && isGroupTile($0, left: false) })
     }
 
     // 自动落位：只给**还不在 Dock 上**的新分组算；锚 = 每组第一个 App 在原列表中的下标
@@ -244,7 +279,7 @@ func dockSync(_ cfg: JSONObject, only: Set<String>? = nil, prune: Bool = true,
     }
 
     func keepLeft(_ t: [String: Any]) -> Bool {
-        if let l = tileLabel(t), managed.contains(l) { return false }
+        if let l = tileLabel(t), managed.contains(l), isGroupTile(t, left: true) { return false }
         return !(prune && matches(t, allGrouped))
     }
 
@@ -259,13 +294,15 @@ func dockSync(_ cfg: JSONObject, only: Set<String>? = nil, prune: Bool = true,
             placed.insert(g.name)
         }
         if let l = tileLabel(t) {
-            if let g = pendingLeft[l] {
+            if let g = pendingLeft[l], isGroupTile(t, left: true) {
                 left.append(tileFor(g))       // 原地替换：位置就是用户现在看到的这个
                 placed.insert(l)
                 replacedInPlace.insert(l)
                 continue
             }
-            if managed.contains(l) { continue }   // 分组被禁用/删除 → 照旧摘掉
+            if managed.contains(l), isGroupTile(t, left: true) {
+                continue                      // 分组被禁用/删除 → 照旧摘掉
+            }
         }
         if keepLeft(t) { left.append(t) }
     }
@@ -273,13 +310,15 @@ func dockSync(_ cfg: JSONObject, only: Set<String>? = nil, prune: Bool = true,
     var right: [[String: Any]] = []
     for t in (pl["persistent-others"] as? [[String: Any]] ?? []) {
         if let l = tileLabel(t) {
-            if let g = pendingRight[l] {
+            if let g = pendingRight[l], isGroupTile(t, left: false) {
                 right.append(tileFor(g))      // 原地替换
                 placed.insert(l)
                 replacedInPlace.insert(l)
                 continue
             }
-            if managed.contains(l) { continue }
+            if managed.contains(l), isGroupTile(t, left: false) {
+                continue
+            }
         }
         if (tilePath(t) ?? "").hasPrefix(BASE.path) { continue }
         right.append(t)
@@ -331,10 +370,11 @@ func dockRemove(_ names: [String]) throws {
     // ⚠️ 两个区都要摘：左侧启动器 tile 在 persistent-apps，右侧文件夹 Stack 在
     // persistent-others —— 只摘右边的话，remove 之后左侧磁贴原地不动，
     // 命令却照常打印「已从 Dock 移除」。（2026-09-29 修；Python 侧同款。）
-    for key in ["persistent-apps", "persistent-others"] {
+    // isGroupTile 闸门：真实 App 与分组同名时不误摘（2026-10-03 修）。
+    for (key, left) in [("persistent-apps", true), ("persistent-others", false)] {
         pl[key] = (pl[key] as? [[String: Any]] ?? []).filter {
             guard let l = tileLabel($0) else { return true }
-            return !victims.contains(l)
+            return !victims.contains(l) || !isGroupTile($0, left: left)
         }
     }
     try dockWrite(pl)

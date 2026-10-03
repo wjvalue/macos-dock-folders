@@ -16,7 +16,7 @@ func cmdLayout(_ cfg: JSONObject, _ args: [String]) {
         print("默认布局：\(cfg["layout"]?.stringValue ?? DEFAULT_LAYOUT)")
         for g in cfg.groups {
             let own = g["layout"]?.stringValue ?? "（跟随默认）"
-            guard let n = groupAppCount(g) else {
+            guard let n = folderAppCount(g) else {
                 print("  \(pad(g.name, 12)) \(pad(own, 14)) 文件夹不存在")
                 continue
             }

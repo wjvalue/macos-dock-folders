@@ -129,9 +129,14 @@ func panelSize(_ mode: String, _ n: Int) -> (w: Int, h: Int) {
 
 /// 数分组文件夹里的有效条目数。文件夹不存在返回 nil。
 ///
+/// ⚠️ 名字不能叫 groupAppCount：Interactive.swift 已有一个同名函数（文件夹优先、
+/// 没建文件夹时回退读配置，给交互列表用）。之前靠「Int vs Int?」重载决议区分
+/// 两个语义，能跑但纯属陷阱 —— Python 侧就因同名遮蔽真出过显示 bug
+/// （2026-10-03 改名）。`dg layout` 用本函数；`groupAppCount` 带配置回退。
+///
 /// 过滤规则和启动器 main.swift 的 readEntries() 对齐：跳过 `.DS_Store` 之类的
 /// 隐藏文件，以及带 \r 的自定义图标载体（`Icon\r`）—— 它不是 App，不占格子。
-func groupAppCount(_ g: JSONObject) -> Int? {
+func folderAppCount(_ g: JSONObject) -> Int? {
     let folder = BASE.appendingPathComponent(g.name)
     var isDir: ObjCBool = false
     guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDir),

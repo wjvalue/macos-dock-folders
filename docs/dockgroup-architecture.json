@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "dockgroup 架构",
+    "locale": "zh-CN",
+    "output": "dockgroup-architecture.html",
+    "quality_profile": "showcase",
+    "viewBox": [1220, 500],
+    "views": [
+      { "id": "main-path", "label": "主路径", "focus": ["entry", "cli", "core", "app", "dock"], "note": "从一条 dg 命令到 Dock 上可点击的分组图标。" },
+      { "id": "state", "label": "落盘状态", "focus": ["core", "config", "vault", "cache", "backup"], "note": "配置、分组文件夹、缓存、备份四份状态各自的作用。" },
+      { "id": "watch-loop", "label": "自动刷新闭环", "focus": ["vault", "agent", "cli", "core", "cache"], "note": "文件夹一变，launchd 触发 dg rebuild 重算拼贴图标。" }
+    ]
+  },
+  "components": [
+    { "id": "gui", "type": "frontend", "label": "管理窗口", "sublabel": "改完即时预览", "pos": [290, 40], "size": [140, 84] },
+    { "id": "config", "type": "database", "label": "groups.json", "sublabel": "有序 JSON", "pos": [540, 40], "size": [140, 84] },
+
+    { "id": "entry", "type": "external", "label": "用户入口", "sublabel": "终端 · 拖放 · 双击", "pos": [40, 205], "size": [140, 84] },
+    { "id": "cli", "type": "backend", "label": "dg CLI 引擎", "sublabel": "20 个命令", "tag": "Swift", "pos": [290, 205], "size": [140, 84] },
+    { "id": "core", "type": "backend", "label": "Core 能力层", "sublabel": "配置 · Dock · 拼贴", "pos": [540, 205], "size": [140, 84] },
+    { "id": "app", "type": "backend", "label": "分组启动器 .app", "sublabel": "点击弹面板", "pos": [790, 205], "size": [140, 84] },
+    { "id": "dock", "type": "external", "label": "macOS Dock", "sublabel": "persistent-apps", "pos": [1040, 205], "size": [140, 84] },
+
+    { "id": "agent", "type": "messagebus", "label": "launchd 监听", "sublabel": "WatchPaths", "pos": [40, 370], "size": [140, 84] },
+    { "id": "vault", "type": "database", "label": "分组文件夹", "sublabel": "别名即事实来源", "pos": [290, 370], "size": [140, 84] },
+    { "id": "cache", "type": "database", "label": ".cache", "sublabel": "图标 · 二进制", "pos": [790, 370], "size": [140, 84] },
+    { "id": "backup", "type": "security", "label": ".backup", "sublabel": "写前 plist 快照", "pos": [1040, 370], "size": [140, 84] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "~/Dock Groups/", "wraps": ["vault", "cache", "backup"], "pad": 14 }
+  ],
+  "connections": [
+    { "id": "entry-cli", "from": "entry", "to": "cli", "label": "dg 命令", "variant": "emphasis" },
+    { "id": "cli-core", "from": "cli", "to": "core", "label": "调用能力层" },
+    { "id": "core-app", "from": "core", "to": "app", "label": "构建启动器" },
+    { "id": "app-dock", "from": "app", "to": "dock", "label": "写入 Dock 条目", "variant": "emphasis" },
+    { "id": "gui-cli", "from": "gui", "to": "cli", "label": "转发引擎动作", "labelDy": 40 },
+    { "id": "gui-config", "from": "gui", "to": "config", "label": "外观直写" },
+    { "id": "core-config", "from": "core", "to": "config", "label": "读写配置" },
+    { "id": "core-vault", "from": "core", "to": "vault", "label": "建别名 · 收成员" },
+    { "id": "core-cache", "from": "core", "to": "cache", "label": "拼贴图标 · 二进制", "labelDy": 60 },
+    { "id": "vault-agent", "from": "vault", "to": "agent", "label": "WatchPaths" },
+    { "id": "agent-cli", "from": "agent", "to": "cli", "label": "文件夹一变即 rebuild", "variant": "dashed", "fromSide": "top", "toSide": "bottom" },
+    { "id": "dock-backup", "from": "dock", "to": "backup", "label": "写前导出 plist", "labelDy": 40 }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "主路径", "items": [
+      "dg apply：合成拼贴图标 → 构建启动器 .app → 写入 Dock",
+      "所有分组共用一份启动器二进制，差异全在 Info.plist"
+    ]},
+    { "dot": "emerald", "title": "事实来源", "items": [
+      "分组文件夹里的 App 别名是唯一事实来源",
+      "groups.json 只在文件夹为空时播种一次，之后不回写"
+    ]},
+    { "dot": "amber", "title": "安全与回滚", "items": [
+      "写 Dock 前先导出 plist 到 .backup/，读不到就中止",
+      "Dock 条无变化时跳过 killall Dock（零闪模式）"
+    ]},
+    { "dot": "slate", "title": "零运行期依赖", "items": [
+      "20 个命令全部 Swift 实现，只用 swiftc，不引 SPM",
+      "dockgroup.py 保留作源码安装回退，逐行对照把关"
+    ]}
+  ]
+}

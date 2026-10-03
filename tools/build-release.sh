@@ -10,7 +10,7 @@
 # 用法：tools/build-release.sh [版本号]  （缺省从 scripts/dockgroup.py 读）
 #
 # 为什么 launcher/manager 也要预编译：dg apply/rebuild 会现场 swiftc 编译它们，
-# 预编译版由 install.command 直接放进 ~/Dock Groups/.cache/（源码摘要戳一起
+# 预编译版由 install.command 直接放进落盘目录的 .cache/（源码摘要戳一起
 # 放），launcherBinary/managerBinary 命中缓存 → 用户机器上**不需要 CLT**。
 
 set -euo pipefail

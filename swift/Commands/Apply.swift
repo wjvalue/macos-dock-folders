@@ -59,6 +59,11 @@ func cmdApply(_ cfg: JSONObject, _ args: [String]) {
         }
     }
 
+    // ⚠️ 先杀启动器再写 Dock（与 refreshGroups 同一安全顺序）：dockSync 内部
+    // 会 killall Dock，顺序反了的话，重启完 Dock 到旧启动器退出的间隙里点到
+    // 图标，会用旧布局画一次面板。打印保持在原有位置，输出顺序不变。
+    let killedLaunchers = killLaunchers()
+
     // ⚠️ 注意传的是 only: nil 而不是上面那个 only —— Python 就是这么写的
     // （cmd_apply 里是 `dock_sync(cfg, only=None, prune=not keep)`）。
     // 看着像笔误，但这是原版行为：sync 阶段一律处理**所有** enabled 分组，
@@ -76,7 +81,7 @@ func cmdApply(_ cfg: JSONObject, _ args: [String]) {
 
     let after = (dockRead()["persistent-apps"] as? [[String: Any]] ?? []).count
     print("\nDock 左侧 App 图标：\(before) → \(after)")
-    if killLaunchers() {
+    if killedLaunchers {
         print("  已结束正在运行的启动器 —— 下次点开面板才会用上新布局")
     }
     for g in targets {
@@ -93,5 +98,5 @@ func cmdApply(_ cfg: JSONObject, _ args: [String]) {
     }
     // 这句和 Python 版**逐字相同**：迁移完成，统一指路 dg 子命令
     // （分发形态不装 Pillow，dockgroup.py 跑不起来，别再让用户走死路）。
-    print("备份在 ~/Dock Groups/.backup/，出错用 dg restore 回滚")
+    print("备份在 \(BACKUP.path)，出错用 dg restore 回滚")
 }

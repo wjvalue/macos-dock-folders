@@ -34,7 +34,8 @@ Stack 的弹窗逻辑和 tile 所在区域绑定，**没有任何 plist 字段�
    ⚠️ 已知缺口：预编译分发不装 Pillow、Python 侧缺 macOS 26 的图标自愈修复 ——
    能走上面三条路就别用这条。
 
-本仓库配置在 `~/Dock Groups/groups.json`（可用 `DOCKGROUP_HOME` 覆盖）。
+本仓库配置在 `~/Library/Application Support/DockGroup/data/groups.json`
+（可用 `DOCKGROUP_HOME` 覆盖）。
 
 **先装一次短命令**，之后所有操作都用 `dg`，不用再敲长路径。有预编译二进制时
 直接用它（见 `tools/install.command` 预编译分支）；纯源码场景的 Python shim：
@@ -118,7 +119,7 @@ dg list / style / layout / open / test / logs / remove / clean / watch-install /
 >    （为了即时预览），两边逻辑和文件格式逐字节一致（`DockGroupManager --dump-config`
 >    可以验证往返，见下）；
 > ③ 它是普通 App（有 Dock 图标，不设 `LSUIElement`），和每分组一个的分组启动器不是一回事，
->    产物在 `~/Dock Groups/.apps/DockGroup.app`。
+>    产物在 `~/Library/Application Support/DockGroup/data/.apps/DockGroup.app`。
 >
 > **外观三项的作用范围（2026-09-22 加）**：右栏顶部有个「当前分组 / 全局默认」
 > 分段控件 —— 默认只改**左边选中的分组**（写进该分组的覆盖字段，引擎 apply /
@@ -158,7 +159,7 @@ dg list / style / layout / open / test / logs / remove / clean / watch-install /
 1. **读现状**：`dg list`，或 `defaults read com.apple.dock persistent-apps` + percent-decode。
 2. **提方案**：按用途分组（AI/浏览器/社交/办公/系统/个人）。
    **高频 App 保持平铺**，只折叠「低频但想在手边」的。清单给用户确认。
-3. **预览**：跑 `preview`，把 `~/Dock Groups/.cache/preview-all.png` 给用户看。
+3. **预览**：跑 `preview`，把 `~/Library/Application Support/DockGroup/data/.cache/preview-all.png` 给用户看。
    拼贴图标**必须在 64px 下也检查**（真实 Dock tile 就是这个尺寸）——
    做一张 128/96/64px 三档 + 模拟 Dock 条的对比图给用户挑风格，比只给大图有效得多。
 4. **拿到确认再 apply**。这是改系统偏好，不能擅自动手。
@@ -195,7 +196,7 @@ dg list / style / layout / open / test / logs / remove / clean / watch-install /
      （bookmark 二进制，magic `book`，可用 JXA `bookmarkDataWithOptions:...:error:` 生成再 base64 回传）
    - 写之前先备份 plist
 
-5. **文件夹是唯一事实来源**。让用户往 `~/Dock Groups/<组名>/` 里拖 App
+5. **文件夹是唯一事实来源**。让用户往分组文件夹里拖 App（管理窗口「在 Finder 里打开」）
    （⌘⌥ = 建别名，直接拖是**移动**，会真把 App 搬出 /Applications —— **必须警告**），
    再 `rebuild`。配置里的 `apps` 只当首次播种用。
 
@@ -343,7 +344,7 @@ dg list / style / layout / open / test / logs / remove / clean / watch-install /
     - `build_launcher_app` 按内容摘要（摘要含 `DockGroupMaterial`）决定要不要重写
       bundle。一旦手动改过 Info.plist / 换过二进制，戳记和实际内容就对不上了，
       下一次 `rebuild` 会算出「与戳记相同」而**跳过重写**，看起来就是「改了没生效」。
-    - 处理：`rm -f ~/Dock\ Groups/.cache/*.bundle-stamp` 再 `dg rebuild`。
+    - 处理：`rm -f ~/Library/Application\ Support/DockGroup/data/.cache/*.bundle-stamp` 再 `dg rebuild`。
 
 17. **材质是「分组覆盖全局」而不是纯全局**（`group_material()`）：
     分组自己写了 `material` 就用自己的，没写才退回 `groups.json` 顶层的默认值。
@@ -511,7 +512,7 @@ dg list / style / layout / open / test / logs / remove / clean / watch-install /
 | 换了 material 但面板没变化 | ① `appearance` 必须设在毛玻璃视图上，只设 window 无效（第 15 条）② 二进制没跟着源码走（第 20 条）：看日志里的 `panel: material=[…]` |
 | 面板比 Dock 高一截 | 默认是 `row`（132pt）。`dg layout --all dock` 换成和 Dock 条等高（72pt、无名字，悬停出提示）；`dock-name` 是保留名字的那档（80pt）；`dock-grid` 是**两倍条高的无字网格**（2×2 = 144×144）。三档都按屏幕可用区实时算高度（第 22 条） |
 | dock 模式下图标大小 / 名字不对 | 看 `panel: … icon=… label=…`：`label=false` 是 `dock`，`icon` 应当是「条高 - 28」。数值不对 = 二进制没跟着源码走（第 20 条） |
-| 改了 `main.swift`，rebuild 后界面没变 | 第 20 条。先看 `.cache/<组名>.events.log` 的 `panel:` / `shine:` 两行；强制重编：`rm -f ~/Dock\ Groups/.cache/.launcher.src-stamp` 再 `dg rebuild` |
+| 改了 `main.swift`，rebuild 后界面没变 | 第 20 条。先看 `.cache/<组名>.events.log` 的 `panel:` / `shine:` 两行；强制重编：`rm -f ~/Library/Application\ Support/DockGroup/data/.cache/.launcher.src-stamp` 再 `dg rebuild` |
 | 点 Dock 图标看到的还是旧面板 | ① `.cache/<组名>.events.log` 里没有 `panel:` 行 = 跑的是旧二进制（rebuild 一次）② `winlist` 的窗口尺寸和布局常量算出来的对不上 = 陈旧进程（第 19 条） |
 | 排列不是想要的（还是长条 / 没变网格） | 默认就是 `row` 长条。要网格得显式开：`dg layout --all auto`。① 分组自己写了 `layout` 会覆盖全局 → `dg layout` 看每组实际模式（它会打印「n 个 App → 几×几 宽×高」）；② `bundle-stamp` 缓存 → 清掉再 `dg rebuild`；③ 对账 `.cache/<组名>.events.log` 的 `panel: layout=… grid=… size=… cell=…` |
 | 四宫格 / 九宫格看着不是正方形 | 网格模式必须用 `kCellWGrid 100`（= `kCellH`，见 `geometry(for:)`）。沿用长条的 86 时 2×2 会变成 211×239 的竖长方形 —— 这就是用户当初要求改回长条默认的原因（第 21 条） |

@@ -24,12 +24,12 @@ import UniformTypeIdentifiers
 enum P {
     static let home = FileManager.default.homeDirectoryForCurrentUser
 
-    /// 与 dockgroup.py 的 BASE 保持同一口径（DOCKGROUP_HOME > ~/Dock Groups）。
+    /// 与 dockgroup.py 的 BASE 保持同一口径（DOCKGROUP_HOME > 默认落盘目录）。
     static let base: URL = {
         if let s = ProcessInfo.processInfo.environment["DOCKGROUP_HOME"], !s.isEmpty {
             return URL(fileURLWithPath: (s as NSString).expandingTildeInPath)
         }
-        return home.appendingPathComponent("Dock Groups")
+        return home.appendingPathComponent("Library/Application Support/DockGroup/data")
     }()
 
     static let config = base.appendingPathComponent("groups.json")
@@ -46,7 +46,10 @@ enum P {
            !s.isEmpty {
             return URL(fileURLWithPath: s)
         }
-        return home.appendingPathComponent("Dock Groups/dockgroup.py")
+        // 兜底路径必须和引擎的实际落盘一致：dockgroup.py 在安装根的 scripts/
+        // 子目录里（install.command / Bootstrap / 引擎自愈都拷到那里），
+        // 少一段 scripts 的话这个兜底永远指向不存在的文件。
+        return home.appendingPathComponent("Library/Application Support/DockGroup/scripts/dockgroup.py")
     }()
 
     static func mosaic(_ group: String) -> URL {
@@ -551,7 +554,14 @@ final class AppModel: ObservableObject {
                 } else if let u = item as? URL {
                     url = u
                 } else if let s = item as? String {
-                    url = URL(string: s)
+                    // loadItem 偶尔给的是路径字符串：含空格 / 中文时 URL(string:)
+                    // 解析失败，拖放被静默丢掉。路径形态走 fileURLWithPath，
+                    // URL 形态才走 URL(string:)。（2026-10-03 修。）
+                    if s.hasPrefix("file://") {
+                        url = URL(string: s)
+                    } else {
+                        url = URL(fileURLWithPath: s)
+                    }
                 }
                 guard let u = url, u.pathExtension.lowercased() == "app" else { return }
                 Task { @MainActor in

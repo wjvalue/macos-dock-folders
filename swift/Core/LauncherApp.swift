@@ -212,6 +212,13 @@ func buildLauncherApp(_ g: JSONObject, style: String = DEFAULT_STYLE, force: Boo
     try pngToIcns(mosaic, iconFile)
     try PlistValue.dict(core).xmlData().write(to: info, options: .atomic)
 
+    // ⚠️ 重签之前必须清掉 bundle 根上的 FinderInfo：上一轮的 applyCustomIcon 写下的
+    // com.apple.FinderInfo 会被 codesign 判为 "resource fork, Finder information, or
+    // similar detritus not allowed" —— 于是**第二次**构建开始签名必然失败，产物带着
+    // 坏签名（codesign --verify 报 "sealed resource is missing"）。首次构建是干净的，
+    // 所以这个坑只在「改了材质/图标后重跑」时才现形，看着像偶发。
+    // 清掉不丢东西：自定义图标在本函数末尾会重新设一次。（2026-10-03 修。）
+    run("/usr/bin/xattr", ["-c", app.path])
     let codesign = which("codesign") ?? "/usr/bin/codesign"
     let cs = run(codesign, ["--force", "--sign", "-", app.path])
     if !cs.ok {
@@ -233,7 +240,11 @@ func buildLauncherApp(_ g: JSONObject, style: String = DEFAULT_STYLE, force: Boo
         try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: d.path)
     }
 
-    try digest.write(to: stamp, atomically: true, encoding: .utf8)
+    // 签名失败不写戳：上面「下一轮 rebuild 会重签」的承诺靠 stamp 失配成立，
+    // 戳一写，坏签名的产物就被固定到内容摘要变化为止。（2026-10-03 修。）
+    if cs.ok {
+        try digest.write(to: stamp, atomically: true, encoding: .utf8)
+    }
 
     // 产物要能脱离「我这台机」。清隔离属性放在签名之后是安全的 ——
     // 签名保护的是文件内容，xattr 不在保护范围内。

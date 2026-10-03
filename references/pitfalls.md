@@ -832,7 +832,8 @@ shell 配置，BASE 是自定义位置时 agent 会找错配置目录。
 swiftc 找不到文件直接退出 —— 尽管 dg 二进制本身是全功能的，rebuild 还是断。
 
 **做法**：install.command 预编译路径把两份 main.swift 副本放进
-`~/Dock Groups/.cache/`（`.launcher.main.swift` / `.manager.main.swift`，
+落盘目录的 `.cache/`（`~/Library/Application Support/DockGroup/data/.cache/`，
+放 `.launcher.main.swift` / `.manager.main.swift`，
 与摘要戳同源）；引擎侧按「仓库 → 缓存」的顺序找源码。仓库不在场时摘要
 照样命中缓存，rebuild 不需要仓库存在。
 
@@ -926,3 +927,110 @@ Python 引擎无法设自定义图标，已退役不补。
 
 **诊断技巧**：查系统实际渲染用 `NSWorkspace.icon(forFile:)` 画 PNG 看，
 别拿 Dock 截图猜——Dock 有 per-item 缓存，时序会骗人。
+
+## 25. 落盘目录搬进 Application Support（v1.4.0）
+
+**背景**：用户反馈「已经有了 app，为什么还必须多一个文件夹」。查证结论：
+分组内容**无法内化进 .app** ——
+
+1. **bundle 签名封存**：往 `Contents/` 里写一个文件，`codesign --verify` 立刻报
+   `a sealed resource is missing or invalid`，`spctl` 拒绝。分组内容是每次增删 App
+   都要变的，放进 bundle 等于每改一次就自毁签名。
+2. **Dock tile 必须指向磁盘真实路径**：每个分组要带自己的图标 + Info.plist，
+   N 个分组 = N 个 .app，必须落盘。
+3. **分组文件夹是「唯一事实来源」**：里面是 Finder 真别名，拖放加入分组依赖它。
+
+所以只能收敛位置，不能消除。**做法**：`~/Dock Groups` → 
+`~/Library/Application Support/DockGroup/data/`，home 目录不再留任何东西。
+
+**迁移是自动的**（引擎启动时 `migrateLegacyDataIfNeeded`，安装器也搬一次）：
+搬目录 → 重建启动器（Info.plist 里的 `DockGroupFolder` 指着旧路径）→ 
+`dock_sync` 把 tile 按 label **原地替换**成新路径（位置不动）→ 装过 watch agent 的
+重装一次（`WatchPaths` / `DOCKGROUP_HOME` 也指旧位置）。
+
+**别踩的**：
+- **纯查询命令不能有副作用**。第一版把迁移挂在 `main()` 最前面，结果 `dg --version`
+  都会把用户目录搬家。加围栏：`--version` / `--help` / `__dump-config` 跳过。
+- `DOCKGROUP_HOME` 的**语义没变**（仍是落盘目录本身，不是安装根）—— 变了的话
+  `tools/compare_cli.sh` 的隔离全部失效。
+- 迁移只在「默认落盘」时跑；设了 `DOCKGROUP_HOME` / `DOCKGROUP_DOCK_PLIST` 直接
+  跳过，测试绝不能碰真实数据。
+
+## 26. 自定义图标写下的 FinderInfo 会让下一次 codesign 失败（v1.4.0 修）
+
+**现象**：改了材质 / 图标风格后重跑 `apply`，`codesign` 报
+`resource fork, Finder information, or similar detritus not allowed`，产物带着
+坏签名（`codesign --verify` 报 `sealed resource is missing`，还会看到
+`DockGroupLauncher.cstemp` 这种残留）。
+
+**根因**：`applyCustomIcon`（自定义图标，破 macOS 26 squircle 监狱用的）往 bundle
+根写 `com.apple.FinderInfo`，而 codesign 拒绝签带 FinderInfo 的 bundle。
+**首次构建是干净的**（签完才设图标），所以这个坑只在**第二次构建**起才现形 ——
+看着像偶发，实际必然。
+
+**修法**：codesign **之前** `xattr -c <app>`。清掉不丢东西 —— 自定义图标在函数末尾
+会重新设一次。（`buildLauncherApp` 与 `buildManagerApp` 两处都要。）
+
+**为什么一直没发现**：`bundle-stamp` 缓存让「内容没变」的 rebuild 直接跳过重签，
+只有真的改了材质 / 风格 / 图标才走到签名那一步。属于「测的时候没改东西」类盲区。
+
+**证据**：在 `/tmp` 干净副本上对 HEAD 复现同样失败（`41a0c17` 引入自定义图标起就存在），
+修后同一路径重签 `valid on disk` 且 FinderInfo 仍在。
+
+## 27. 升级时「打开 app 看不到配置」——三处副本不同步（v1.4.0 修）
+
+**用户实报**：改完落盘目录、`dg` 一切正常，双击 app 却是空配置。
+
+**根因是三个独立问题叠在一起**，每个单独都能造成这个现象：
+
+### 27.1 `/Applications/DockGroup.app` 是独立副本，不会跟着升级
+
+它是安装时**拷过去**的。旧副本的落盘路径是编译期烧死的，于是去旧位置找、
+找不到就**按首次运行建了个空配置** —— 看着像配置丢了。
+
+**修法**：`buildManagerApp` 末尾调 `syncManagerAppToApplications`，构建完就把
+`/Applications` 那份换成新的。判据用**可执行文件字节**（manager 的
+CFBundleVersion 写死 "1"，比不出新旧）；一样就一个字节都不动（保 mtime，
+免得 Dock 白刷图标）。三种情况不碰：对照测试模式、`/Applications` 里没有、
+那儿是**别人的**同名 App（bundle id 不是我们的）。
+
+### 27.2 `REPO_ROOT` 让标记文件**无条件**优先 → 本机开发编译了旧源码
+
+引擎找源码的顺序原来是「`DOCKGROUP_REPO` → 标记文件 → 编译期路径」。标记文件
+指向安装根，而安装根里那份源码是**安装时拷的**。本机开发时改仓库源码、重编 dg，
+manager 却拿安装根的旧源码编出来 —— 改了个寂寞。
+
+**修法**：让「**本机真的存在、且是一棵完整源码树**」的编译期路径优先于标记文件。
+两种场景都对：用户机上编译期路径不存在 → 走标记；开发机上源码树就在手边 → 用它。
+判定用 `scripts/dockgroup.py` 是否存在（`looksLikeSourceTree`）。
+
+### 27.3 旧版 app 进程还开着，会一直往旧位置写
+
+旧 app 是独立进程，不杀它就一边往 `~/Dock Groups` 写、一边把空壳留在那儿 ——
+这边刚迁完，它下一次保存又建回来。
+
+**修法**：迁移开头 `pkill -x DockGroupManager`。顺带把警告文案改对：数据已经在
+新位置时**没有**东西可迁，早先那句「重跑 install.command 即可完成迁移」是错的，
+用户会反复重跑而目录始终在。
+
+**别踩的**：
+- 升级路径要**端到端**测：不是「`dg` 命令能跑」就算过，得把**用户实际双击的那个
+  app** 也算进验证面。这次就是漏了它。
+- 凡是「编译期烧死 + 落盘成独立副本」的东西，升级时都要问一句「谁负责把它换新」。
+
+### 27.4 安装器的迁移块排在「会建 data/ 的步骤」之后 → 永远走不到（2026-10-03 修）
+
+**现象**：install.command 的 ②b 迁移块写对了条件，但排在 ③（`mkdir -p "$CACHE"`，
+`CACHE = data/.cache`）**后面** —— mkdir 先把 `data/` 建了出来，`[ ! -e "$DATADIR" ]`
+从此恒假，迁移分支永远走不到；引擎侧 `migrateLegacyDataIfNeeded` 也因「新目录已
+存在」拒绝补迁。v1.3 用户走方式 B 升级，旧数据滞留 `~/Dock Groups`，警告文案还
+建议「确认无误后可删」—— 此时删掉的是**没迁走的真实数据**。已用假 home 沙箱复现。
+
+**修法**：②b 整块移到 ③ 之前；两个安装器（install.command / Bootstrap）的迁移块
+开头都补 `pkill -x DockGroupManager`（与引擎迁移对齐，见 27.3）。
+
+**别踩的**：
+- 安装器里**任何会创建目标目录的步骤**都算「迁移已发生」的前置条件 —— 迁移判断
+  必须排在它们全部之前，别只看「我没建过 data/ 就行」。`mkdir -p` 的副作用也是副作用。
+- 排查「迁移逻辑对不对」时，把**执行顺序**当一部分审：条件、动作分别都对，
+  摆错先后照样整体失效。

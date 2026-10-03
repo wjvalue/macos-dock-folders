@@ -190,7 +190,7 @@ dg open    组名        在 Finder 里打开分组文件夹（往里面拖 App�
 dg test    组名        手动启动一次，验证点击展开效果
 dg logs    组名        查看运行日志（面板几何 + 点击事件轨迹）
 dg remove  组名...     从 Dock 移除（保留文件夹）
-dg clean   组名...     从 Dock 移除并删除文件夹
+dg clean   组名...     从 Dock 移除并删除文件夹（配置条目一并清掉）
 dg gui [--rebuild]     打开图形界面（分组管理窗口，改完即时预览）
 dg doctor              体检：检查依赖是否齐全
 dg init [--force]      扫描当前 Dock，生成起始 groups.json
@@ -457,7 +457,8 @@ dg layout 办公 default             # 「办公」退回全局默认
 - **比布局** → 离屏渲染，不用真弹窗，一次能出好几版：
 
   ```bash
-  DOCKGROUP_RENDER=/tmp/panel.png "$HOME/Dock Groups/.apps/AI.app/Contents/MacOS/DockGroupLauncher"
+  DOCKGROUP_RENDER=/tmp/panel.png \
+    "$HOME/Library/Application Support/DockGroup/data/.apps/AI.app/Contents/MacOS/DockGroupLauncher"
   ```
 
 - **比材质 / 看圆角和阴影** → 必须真机截图。离屏渲染看不到窗口阴影，毛玻璃还会退化成
@@ -472,7 +473,8 @@ dg layout 办公 default             # 「办公」退回全局默认
 
 ## 配置 `groups.json`
 
-配置默认读 `~/Dock Groups/groups.json`（可用环境变量 `DOCKGROUP_HOME` 改落盘目录）。
+配置默认读 `~/Library/Application Support/DockGroup/data/groups.json`
+（可用环境变量 `DOCKGROUP_HOME` 改落盘目录）。
 
 ```json
 {
@@ -541,13 +543,20 @@ Dock 支持把文件夹放进去（Stack），但它有个硬限制：
 ### 落盘位置
 
 ```text
-~/Dock Groups/
-├── AI/                     ← 分组文件夹（App 别名 + 自定义图标），事实来源
-├── .apps/AI.app/           ← 生成的启动器 App
-├── .cache/                 ← 拼贴图标、App 图标缓存、预览图、运行日志
-├── .backup/                ← 每次改 Dock 前自动备份的 plist
-└── groups.json
+~/Library/Application Support/DockGroup/
+├── scripts/ · prebuilt/    ← 引擎源码与预编译二进制（安装器放的）
+└── data/
+    ├── AI/                 ← 分组文件夹（App 别名 + 自定义图标），事实来源
+    ├── .apps/AI.app/       ← 生成的启动器 App
+    ├── .cache/             ← 拼贴图标、App 图标缓存、预览图、运行日志
+    ├── .backup/            ← 每次改 Dock 前自动备份的 plist
+    └── groups.json
 ```
+
+> **v1.4.0 起 home 目录不再留东西**：以前分组数据放在 `~/Dock Groups/`，现在整个
+> 收进 `~/Library/Application Support/DockGroup/data/`（macOS 的标准位置）。
+> 升级时**自动迁移**，旧目录会被搬走。加 App 走管理窗口的「在 Finder 里打开」
+> 或直接拖进窗口。
 
 ### 已知限制
 
@@ -576,8 +585,8 @@ Dock 支持把文件夹放进去（Stack），但它有个硬限制：
 | 换了图标风格但 Dock 上还是旧图（点一下才变） | 已修（1.3.1）：Dock/LaunchServices 按 icns **文件路径**缓存图标，内容变了名字不变就不刷 → 现在图标一变 icns 就换带摘要后缀的新文件名（`AppIcon-<摘要>.icns`），apply 完立即生效 |
 | 每次 `apply` 后手动拖的分组顺序被弹回原位 | 已修（1.3.1）：分组已在 Dock 上时**原地替换**保住手动排序；配置里的 `after` 锚点只在分组首次落位时生效。想让某分组重新按 `after` 落位：`dg remove <组名>` 再 `dg apply` |
 | 每次点「应用到 Dock」都全屏闪一下 | **零闪模式（1.3.1 起）**：Dock 条配置没变时（含只改图标风格/成员这类纯图标变化）跳过重启，完全不闪 —— 新图标会在你下次**点击分组图标**的瞬间显示，GUI 预览始终是即时的。只有 Dock 条本身变化（加删分组、改位置/布局/材质）才重启，那一下是 Dock 进程重启的物理闪烁，无法消除 |
-| 换了 material 但面板没变化 | ① `appearance` 必须设在毛玻璃视图上，只设 window 无效；② `bundle-stamp` 缓存跳过了重写 → `rm ~/Dock\ Groups/.cache/*.bundle-stamp` 再 `dg rebuild` |
-| 改了布局 / 材质，点开面板还是老样子 | ① **最常见：旧的面板进程还在跑。** 启动器收起后要常驻一小段时间（否则 Dock 会报「已不能再打开」），而它的布局是**进程启动时**读进内存的，之后重建 bundle 也影响不到它 → `dg apply` / `dg rebuild` / `dg add` 都会自动结束旧进程，但手工改 bundle 不会。自查：`pgrep -lf DockGroupLauncher`，有残留就 `pkill -f DockGroupLauncher`；② **这个分组自己写了 `layout` / `style` / `material`，覆盖了全局** → 管理窗口里这类分组会标一个橙色滑块图标，右栏写明覆盖了什么并给一键「改回跟随全局」；命令行用 `dg layout` 看每个分组的实际模式、`dg layout 组名 default` 清掉覆盖；③ `bundle-stamp` 缓存跳过了重建 → `rm ~/Dock\ Groups/.cache/*.bundle-stamp` 再 `dg rebuild`；④ `dg logs <组名>` 里 `panel: layout=[…] grid=…x…` 一行能直接对账 |
+| 换了 material 但面板没变化 | ① `appearance` 必须设在毛玻璃视图上，只设 window 无效；② `bundle-stamp` 缓存跳过了重写 → `rm ~/Library/Application\ Support/DockGroup/data/.cache/*.bundle-stamp` 再 `dg rebuild` |
+| 改了布局 / 材质，点开面板还是老样子 | ① **最常见：旧的面板进程还在跑。** 启动器收起后要常驻一小段时间（否则 Dock 会报「已不能再打开」），而它的布局是**进程启动时**读进内存的，之后重建 bundle 也影响不到它 → `dg apply` / `dg rebuild` / `dg add` 都会自动结束旧进程，但手工改 bundle 不会。自查：`pgrep -lf DockGroupLauncher`，有残留就 `pkill -f DockGroupLauncher`；② **这个分组自己写了 `layout` / `style` / `material`，覆盖了全局** → 管理窗口里这类分组会标一个橙色滑块图标，右栏写明覆盖了什么并给一键「改回跟随全局」；命令行用 `dg layout` 看每个分组的实际模式、`dg layout 组名 default` 清掉覆盖；③ `bundle-stamp` 缓存跳过了重建 → `rm ~/Library/Application\ Support/DockGroup/data/.cache/*.bundle-stamp` 再 `dg rebuild`；④ `dg logs <组名>` 里 `panel: layout=[…] grid=…x…` 一行能直接对账 |
 | 图标没跟着文件夹内容变 | `dg rebuild` |
 | Dock 条目被系统丢弃 | `dg restore` 回滚，再手动把 App 拖回 Dock |
 | 想彻底撤销 | `dg restore` |

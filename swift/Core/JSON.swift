@@ -275,7 +275,13 @@ struct JSONParser {
         guard i > start else { return nil }
         let text = String(String.UnicodeScalarView(s[start..<i]))
         if !isFloat, let n = Int(text) { return .int(n) }
-        if let d = Double(text) { return .double(d) }
+        if let d = Double(text) {
+            // JSON 规范没有 inf/NaN：不拦的话 `1e999` 会解析成 inf、以「inf」
+            // 写回 groups.json，产出一份非法 JSON。（2026-10-03 修；
+            // Python 侧 load_config 有同款校验。）
+            guard d.isFinite else { return nil }
+            return .double(d)
+        }
         return nil
     }
 }

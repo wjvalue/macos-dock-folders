@@ -11,11 +11,13 @@
 //     scripts/                    引擎源码根（launcher/manager 源码 + dockgroup.py）
 //
 //   安装动作（与 tools/install.command 预编译分支一一对应）：
-//     ① scripts/ + prebuilt/ → ~/Library/Application Support/DockGroup/
+//     ① scripts/ + prebuilt/ → ~/Library/Application Support/DockGroup/（安装根）；
+//        旧 ~/Dock Groups → 安装根/data/（迁移，之后 home 目录不再留东西）
 //        （安装根固定在这里，用户把 .app 挪走/删掉都不影响引擎找源码；
-//         ~ 之外的 Library 也比藏在 ~/Dock Groups 里更符合 macOS 惯例）
+//         落盘数据也收在同一个 Library 目录下，符合 macOS 惯例）
 //     ② prebuilt/dg → ~/.local/bin/dg，仓库标记指向 ①
-//     ③ 启动器/管理窗口二进制 + 源码摘要戳 → ~/Dock Groups/.cache/
+//     ③ 启动器/管理窗口二进制 + 源码摘要戳 → 安装根/data/.cache/
+//        （安装根在 Library 下，cacheDir 与引擎 CACHE 同一口径）
 //        （戳用 CryptoKit 现算 —— 算法与引擎 Hash.swift 一致：
 //         sha256 小写 hex。命中缓存 = 用户机器不需要 CLT）
 //     ④ xattr -cr 拷贝产物（下载的 zip 解出来全带 quarantine 标记，
@@ -107,6 +109,35 @@ do {
     fail("写安装根失败（\(installRoot.path)）：\(error.localizedDescription)")
 }
 
+// ── ①b 旧数据迁移：~/Dock Groups → 安装根/data/ ───────────────
+// v1.4.0 起 home 目录不再留东西。只在新 data/ 还不存在时搬；新目录已有
+// 内容说明迁过（或用户是全新安装），这时旧目录还在就是异常状态，只警告。
+// 搬完后的重建 + Dock 同步由第 ⑤ 步调起的 dg gui 自动完成（引擎启动时
+// migrateLegacyDataIfNeeded 已无事可做 —— 目录已经在新位置）。
+
+let dataDir = installRoot.appendingPathComponent("data")
+let cacheDir = dataDir.appendingPathComponent(".cache")
+let legacyBase = home.appendingPathComponent("Dock Groups")
+let migratedDataDir = dataDir
+// 旧版管理窗口是独立进程、落盘路径编译期烧死：不结束它，迁移完它一保存
+// 又把 ~/Dock Groups 建回来（pitfalls 27.3；引擎迁移与 install.command 同款）。
+// 没有匹配进程时 pkill 返回非零，随它去。
+run("/usr/bin/pkill", ["-x", "DockGroupManager"])
+do {
+    var isDir: ObjCBool = false
+    if fm.fileExists(atPath: legacyBase.path, isDirectory: &isDir), isDir.boolValue {
+        if fm.fileExists(atPath: migratedDataDir.path) {
+            out("⚠️  旧目录 ~/Dock Groups 还在，但新目录已有内容，没有自动迁移。")
+            out("   确认数据无误后可手动删除 ~/Dock Groups。")
+        } else {
+            try fm.moveItem(at: legacyBase, to: migratedDataDir)
+            out("已迁移：~/Dock Groups → \(migratedDataDir.path)")
+        }
+    }
+} catch {
+    fail("迁移旧数据失败（~/Dock Groups）：\(error.localizedDescription)")
+}
+
 // ── ② dg 短命令 + 仓库标记 ────────────────────────────────────
 
 let localBin = home.appendingPathComponent(".local/bin")
@@ -136,7 +167,6 @@ do {
 
 // ── ③ 种缓存（二进制 + 源码 + 摘要戳）─────────────────────────
 
-let cacheDir = home.appendingPathComponent("Dock Groups/.cache")
 do {
     try fm.createDirectory(at: cacheDir, withIntermediateDirectories: true)
     let pairs: [(String, String)] = [
@@ -182,6 +212,6 @@ if noOpen { guiArgs.append("--no-open") }
 out("DockGroup 已就绪（引擎：\(dgDest.path)）")
 let rc = run(dgDest.path, guiArgs, extraEnv: [
     "DOCKGROUP_REPO": installRoot.path,
-    "DOCKGROUP_HOME": home.appendingPathComponent("Dock Groups").path,
+    "DOCKGROUP_HOME": dataDir.path,
 ])
 exit(rc)

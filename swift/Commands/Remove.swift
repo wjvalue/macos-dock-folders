@@ -55,5 +55,12 @@ func cmdClean(_ cfg: JSONObject, _ args: [String]) {
             }
         }
     }
-    print("已从 Dock 移除并删除文件夹：\(args.joined(separator: ", "))")
+    // 配置条目必须一并摘掉：文件夹都删了还留着 enabled:true 的条目，
+    // 下一次 apply 会经 collectApps（文件夹为空时按配置播种）把整组复活，
+    // 而只靠拖放加进文件夹、没写进配置 apps 的成员此时已经随文件夹丢了。
+    var remaining = cfg
+    let cleaned = Set(args)
+    remaining.groups = cfg.groups.filter { !cleaned.contains($0.name) }
+    saveConfigOrDie(remaining)
+    print("已从 Dock 移除并删除文件夹：\(args.joined(separator: ", "))（配置条目已一并移除）")
 }

@@ -10,12 +10,12 @@ plist，两边都拿它当输入，比**写出来的字节**。输入一致、�
   · 自动落位      成员 App 在 Dock 里的位置决定分组图标插在哪
   · 剔除已折叠的  成员被折叠进分组后，原来那几个图标要从 Dock 上消失（prune）
   · 清掉旧的分组  已经存在同名分组图标时，先摘掉再重插（否则会留一串重复项）
-  · 右侧区过滤    persistent-others 里指向 ~/Dock Groups 的残留要清掉
+  · 右侧区过滤    persistent-others 里指向落盘目录的残留要清掉
   · 兜底追加      成员一个都不在 Dock 里的分组，追加到末尾
   · placement     placement="right" 的分组要落到分隔线右侧
 
 用法：
-  python3 tools/dock_fixture.py <输出目录> <Dock Groups 目录>
+  python3 tools/dock_fixture.py <输出目录> <落盘目录>
 
 输出：
   <输出目录>/dock.plist       样本 Dock 配置

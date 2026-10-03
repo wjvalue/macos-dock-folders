@@ -33,6 +33,7 @@ func cmdDel(_ cfg0: JSONObject, _ args: [String]) {
     var removed: [URL] = []
     var missed: [String] = []
     var danger: [String] = []
+    var removeFailed: [(name: String, reason: String)] = []
     for n in needles {
         let low = n.lowercased()
         var hits = entries.filter {
@@ -60,8 +61,14 @@ func cmdDel(_ cfg0: JSONObject, _ args: [String]) {
                 danger.append(p.lastPathComponent)   // 真实 App（目录），不能删
                 continue
             }
-            try? fm.removeItem(at: p)                // 别名是文件，安全
-            removed.append(p)
+            // 删失败必须按「没删掉」处理：吞掉的话这里照样把它算进 removed，
+            // 打印「已移除」、改写配置，文件夹和配置从此对不上。
+            do {
+                try fm.removeItem(at: p)             // 别名是文件，安全
+                removed.append(p)
+            } catch {
+                removeFailed.append((p.lastPathComponent, error.localizedDescription))
+            }
         }
     }
 
@@ -70,6 +77,9 @@ func cmdDel(_ cfg0: JSONObject, _ args: [String]) {
     }
     if !danger.isEmpty {
         print("  ⛔ 这些是真实 App 而非别名，已跳过（要删请手动处理）：\(danger.joined(separator: "、"))")
+    }
+    for f in removeFailed {
+        print("  ⚠️ 无法删除「\(f.name)」：\(f.reason)")
     }
     if removed.isEmpty {
         fatal("没有移除任何 App")

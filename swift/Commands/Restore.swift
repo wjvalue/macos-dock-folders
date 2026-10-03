@@ -52,6 +52,22 @@ func cmdRestore(_ cfg: JSONObject, _ args: [String]) {
         fatal("备份文件不是合法 plist：\(src.path)")
     }
 
+    // 恢复前先把**当前**状态也存一份备份：万一选错了备份，还能再 restore 一次
+    // 回到恢复前的样子。静默写、不打印（文件名带毫秒时间戳，两侧对不齐，
+    // 而这条路径的输出是逐字节比的）。（2026-10-03 加；Python 版同款。）
+    if dockPlistOverride == nil {
+        let cur = run("/usr/bin/defaults", ["export", DOCK_DOMAIN, "-"])
+        if cur.ok, !cur.out.isEmpty {
+            let fm = FileManager.default
+            try? fm.createDirectory(at: BACKUP, withIntermediateDirectories: true)
+            let stamp = DateFormatter.pythonStamp.string(from: Date())
+            try? cur.out.write(
+                to: BACKUP.appendingPathComponent("com.apple.dock-\(stamp).plist"),
+                options: .atomic)
+            pruneBackups()
+        }
+    }
+
     if let override = dockPlistOverride {
         try? data.write(to: override)       // 对照测试：替身文件收下原始字节
     } else {

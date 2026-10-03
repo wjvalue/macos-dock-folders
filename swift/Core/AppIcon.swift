@@ -10,8 +10,11 @@
 
 import Cocoa
 
-/// 图标缓存路径（按「文件名 + mtime」作 key）。App 不存在返回 nil。
+/// 图标缓存路径（按「文件名 + mtime + 路径摘要」作 key）。App 不存在返回 nil。
 /// Python 用 `int(app.stat().st_mtime)`，所以这里也要**截断到秒**，不能四舍五入。
+/// 路径摘要必须有：只有「文件名 + mtime」的话，/Applications/Foo.app 和
+/// ~/Applications/Foo.app 在 mtime 相同（如系统批量触写）时会共用一份图标，
+/// 拼贴图可能用错。（2026-10-03 修；Python 侧 _icon_cache 同款公式。）
 func iconCachePath(_ app: URL) -> URL? {
     guard FileManager.default.fileExists(atPath: app.path) else { return nil }
     let name = app.deletingPathExtension().lastPathComponent
@@ -20,7 +23,9 @@ func iconCachePath(_ app: URL) -> URL? {
        let d = attrs[.modificationDate] as? Date {
         mtime = Int(d.timeIntervalSince1970)
     }
-    return CACHE.appendingPathComponent("app-icons").appendingPathComponent("\(name)-\(mtime).png")
+    let pathHash = String(sha256Hex(Data(app.path.utf8)).prefix(8))
+    return CACHE.appendingPathComponent("app-icons")
+        .appendingPathComponent("\(name)-\(mtime)-\(pathHash).png")
 }
 
 /// 把缓存里的原图缩到 ICON_SRC_PX，**原地替换**。
